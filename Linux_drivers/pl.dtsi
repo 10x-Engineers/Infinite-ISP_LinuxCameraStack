@@ -250,7 +250,7 @@
 				xlnx,tri-default = <0xFFFFFFFF>;
 				xlnx,tri-default-2 = <0xFFFFFFFF>;
 			};
-			isp_pipe_isp: xil_isp_lite@a0060000 {
+			infinite_isp_pipe: infinite_isp@a0060000 {
 				/* This is a place holder node for a custom IP, user may need to update the entries */
 				clock-names = "pclk", "s00_axi_aclk";
 				clocks = <&misc_clk_0>, <&misc_clk_0>;
@@ -258,10 +258,39 @@
 				interrupt-names = "isp_irq";
 				interrupt-parent = <&axi_intc>;
 				interrupts = <3 2>;
-				reg = <0x0 0xa0060000 0x0 0x20000>;
+				reg = <0x0 0xa0060000 0x0 0x3ffc
+					0x0 0xa0068000 0x0 0x17ffc>;
+				reg-names = "isp", "luts";
 				xlnx,s00-axi-addr-width = <0x11>;
 				xlnx,s00-axi-data-width = <0x20>;
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						direction = "input";
+						reg = <0>;
+						infinite_isp_pipe_in: endpoint {
+							remote-endpoint = <&infinite_isp_video_dev_out>;
+						};
+					};
+					port@1 {
+						direction = "output";
+						reg = <1>;
+						infinite_isp_pipe_out_1: endpoint {
+							remote-endpoint = <&isp_pipe_vip_1_in>;
+						};
+					};
+					port@2 {
+						direction = "output";
+						reg = <2>;
+						infinite_isp_pipe_out_2: endpoint {
+							remote-endpoint = <&isp_pipe_vip_2_in>;
+						};
+					};
+				};
 			};
+
 			isp_pipe_v_frm_rd: v_frmbuf_rd@b0020000 {
 				#dma-cells = <1>;
 				clock-names = "ap_clk";
@@ -372,6 +401,88 @@
 						reg = <0>;
 						vfrmwr_rpimipi_csi2_rx_rpi: endpoint {
 							remote-endpoint = <&subset_conv_rpi_out>;
+						};
+					};
+				};
+			};
+
+			isp_pipe_vip_1: xil_vip@a0064000 {
+				/* This is a place holder node for a custom IP, user may need to update the entries */
+				compatible = "xlnx,xil-vip-1.0";
+				reg = <0x0 0xa0064000 0x0 0x7fc>;
+				xlnx,s00-axi-addr-width = <0xc>;
+				xlnx,s00-axi-data-width = <0x20>;
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						direction = "input";
+						reg = <0>;
+						isp_pipe_vip_1_in: endpoint {
+							remote-endpoint = <&infinite_isp_pipe_out_1>;
+						};
+					};
+					port@1 {
+						direction = "output";
+						reg = <1>;
+						isp_pipe_vip_1_out: endpoint {
+							remote-endpoint = <&isp_pipe_video_dev_in_1>;
+						};
+					};
+				};
+			};
+			isp_pipe_vip_2: xil_vip@a0066000 {
+				/* This is a place holder node for a custom IP, user may need to update the entries */
+				compatible = "xlnx,xil-vip-1.0";
+				reg = <0x0 0xa0066000 0x0 0x7fc>;
+				xlnx,s00-axi-addr-width = <0xc>;
+				xlnx,s00-axi-data-width = <0x20>;
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						direction = "input";
+						reg = <0>;
+						isp_pipe_vip_2_in: endpoint {
+							remote-endpoint = <&infinite_isp_pipe_out_2>;
+						};
+					};
+					port@1 {
+						direction = "output";
+						reg = <1>;
+						isp_pipe_vip_2_out: endpoint {
+							remote-endpoint = <&isp_pipe_video_dev_in_2>;
+						};
+					};
+				};
+			};
+
+			isp_pipe_video_dev {
+				compatible = "xlnx,video";
+				dmas = <&isp_pipe_v_frm_rd 0>, <&isp_pipe_v_frm_wr_1 0>, <&isp_pipe_v_frm_wr_2 0>;
+				dma-names = "port0", "port1", "port2";
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						direction = "output";
+						reg = <0>;
+						infinite_isp_video_dev_out: endpoint {
+							remote-endpoint = <&infinite_isp_pipe_in>;
+						};
+					};
+					port@1 {
+						direction = "input";
+						reg = <1>;
+						isp_pipe_video_dev_in_1: endpoint {
+							remote-endpoint = <&isp_pipe_vip_1_out>;
+						};
+					};
+					port@2 {
+						direction = "input";
+						reg = <2>;
+						isp_pipe_video_dev_in_2: endpoint {
+							remote-endpoint = <&isp_pipe_vip_2_out>;
 						};
 					};
 				};

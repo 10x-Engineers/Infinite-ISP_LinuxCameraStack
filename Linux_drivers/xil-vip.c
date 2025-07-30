@@ -16,42 +16,10 @@
 #include <media/v4l2-common.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-event.h>
+#include "infinite_isp_register.h"
+#include "linux/isp_init.h"
 
 /* Register register map */
-
-#define VIP_REG_RESET                      (0 * 4)
-#define VIP_REG_WIDTH                      (1 * 4)
-#define VIP_REG_HEIGHT                     (2 * 4)
-#define VIP_REG_BITS                       (3 * 4)
-#define VIP_REG_TOP_EN                     (4 * 4)
-#define VIP_REG_HIST_EQU_MIN               (5 * 4)
-#define VIP_REG_HIST_EQU_MAX               (6 * 4)
-#define VIP_REG_CROP_X                     (7 * 4)
-#define VIP_REG_CROP_Y                     (8 * 4)
-#define VIP_REG_CROP_W                     (9 * 4)
-#define VIP_REG_CROP_H                     (10 * 4)
-#define VIP_REG_DSCALE_H                   (11 * 4)
-#define VIP_REG_DSCALE_V                   (12 * 4)
-#define VIP_REG_OSD_X                      (13 * 4)
-#define VIP_REG_OSD_Y                      (14 * 4)
-#define VIP_REG_OSD_W                      (15 * 4)
-#define VIP_REG_OSD_H                      (16 * 4)
-#define VIP_REG_OSD_RGB_FG                 (17 * 4)
-#define VIP_REG_OSD_RGB_BG                 (18 * 4)
-#define VIP_REG_YUV444TO422_SWITCH_UV      (19 * 4)
-#define VIP_REG_INT_STATUS                 (20 * 4)
-#define VIP_REG_INT_MASK                   (21 * 4)
-
-#define VIP_REG_OSD_RAM_ADDR               (1*512*4)
-#define VIP_REG_OSD_RAM_SIZE               (1*512*4)
-
-#define VIP_REG_TOP_EN_BIT_HIST_EQU_EN     (1<<0)
-#define VIP_REG_TOP_EN_BIT_SOBEL_EN        (1<<1)
-#define VIP_REG_TOP_EN_BIT_YUV2RGB_EN      (1<<2)
-#define VIP_REG_TOP_EN_BIT_CROP_EN         (1<<3)
-#define VIP_REG_TOP_EN_BIT_DSCALE_EN       (1<<4)
-#define VIP_REG_TOP_EN_BIT_OSD_EN          (1<<5)
-#define VIP_REG_TOP_EN_BIT_YUV444TO422_EN  (1<<6)
 
 #define VIP_REG_INT_STATUS_BIT_FRAME_START (1<<0)
 #define VIP_REG_INT_STATUS_BIT_FRAME_DONE  (1<<1)
@@ -83,18 +51,12 @@ struct vip_state {
 	struct v4l2_subdev subdev;
 	struct v4l2_mbus_framefmt pad_format[VIP_MEDIA_PADS];
 	struct device *dev;
-	struct clk_bulk_data *clks;
 	void __iomem *iomem;
 	u32 bits;
 	/* used to protect access to this struct */
 	struct mutex lock;
 	struct media_pad pads[VIP_MEDIA_PADS];
 	bool streaming;
-};
-
-static const struct clk_bulk_data vip_clks[] = {
-	{ .id = "s00_axi_aclk" },
-	{ .id = "pclk" },
 };
 
 static inline struct vip_state *
@@ -121,13 +83,12 @@ static int vip_log_status(struct v4l2_subdev *sd)
 {
 	struct vip_state *vip = to_vipstate(sd);
 	struct device *dev = vip->dev;
-	u32 width, height, bits;
 
 	mutex_lock(&vip->lock);
 
-	width     = vip_read(vip, VIP_REG_WIDTH);
-	height    = vip_read(vip, VIP_REG_HEIGHT);
-	bits      = vip_read(vip, VIP_REG_BITS);
+	u32 width  = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config, VIP_WIDTH);
+	u32 height = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config, VIP_HEIGHT);
+	u32 bits   = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config, VIP_BITS);
 	dev_info(dev, "VIP %u x %u YUV%u",
 			width, height, bits);
 
@@ -151,6 +112,13 @@ static int vip_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 
 static int vip_start_stream(struct vip_state *vip)
 {
+	struct REG_Infinite_ISP_VIP *infinite_isp_vip;
+
+	infinite_isp_vip = kzalloc(sizeof(*infinite_isp_vip), GFP_KERNEL);
+	if (!infinite_isp_vip) {
+		dev_err(vip->dev, "Failed to allocate infinite_isp_vip");
+		return -ENOMEM;
+	}
 	u32 in_width   = vip->pad_format[VIP_PAD_SINK].width;
 	u32 in_height  = vip->pad_format[VIP_PAD_SINK].height;
 	u32 out_width  = vip->pad_format[VIP_PAD_SOURCE].width;
@@ -162,37 +130,39 @@ static int vip_start_stream(struct vip_state *vip)
 
 	u32 top_en = 0;
 
-	if (out_code == MEDIA_BUS_FMT_RBG888_1X24) {
-		top_en |= VIP_REG_TOP_EN_BIT_YUV2RGB_EN;
+	if (out_code == MEDIA_BUS_FMT_UYVY8_1X16) {
+		infinite_isp_vip->yuvconvformat.YUV444TO422 = 1;
+	} else if (out_code == MEDIA_BUS_FMT_VYYUYY8_1X24) {
+		infinite_isp_vip->yuvconvformat.YUV444TO422 = 0;
 	} else {
-		top_en |= VIP_REG_TOP_EN_BIT_YUV444TO422_EN;
+		pr_err("Unsupported output format %08X", out_code);
 	}
-	if (in_width != out_width || in_height != out_height) {
-		top_en |= VIP_REG_TOP_EN_BIT_CROP_EN;
-	}
-	if (scale_h > 1 && scale_v > 1) {
-		top_en |= VIP_REG_TOP_EN_BIT_DSCALE_EN;
-	}
-	vip_write(vip, VIP_REG_TOP_EN, top_en);
+	// if (in_width != out_width || in_height != out_height) {
+	// 	top_en |= VIP_REG_TOP_EN_BIT_CROP_EN;
+	// }
+	// if (scale_h > 1 && scale_v > 1) {
+	// 	top_en |= VIP_REG_TOP_EN_BIT_DSCALE_EN;
+	// }
+	// vip_write(vip, VIP_REG_TOP_EN, top_en);
 
-	if (top_en & VIP_REG_TOP_EN_BIT_DSCALE_EN) {
-		u32 scale_val = scale_h < scale_v ? scale_h : scale_v;
-		vip_write(vip, VIP_REG_CROP_X, (in_width-out_width*scale_val)/2);
-		vip_write(vip, VIP_REG_CROP_Y, (in_height-out_height*scale_val)/2);
-		vip_write(vip, VIP_REG_CROP_W, out_width*scale_val);
-		vip_write(vip, VIP_REG_CROP_H, out_height*scale_val);
-		vip_write(vip, VIP_REG_DSCALE_H, scale_val-1);
-		vip_write(vip, VIP_REG_DSCALE_V, scale_val-1);
-	} else {
-		vip_write(vip, VIP_REG_CROP_X, (in_width-out_width)/2);
-		vip_write(vip, VIP_REG_CROP_Y, (in_height-out_height)/2);
-		vip_write(vip, VIP_REG_CROP_W, out_width);
-		vip_write(vip, VIP_REG_CROP_H, out_height);
-	}
+	// if (top_en & VIP_REG_TOP_EN_BIT_DSCALE_EN) {
+	// 	u32 scale_val = scale_h < scale_v ? scale_h : scale_v;
+	// 	vip_write(vip, VIP_REG_CROP_X, (in_width-out_width*scale_val)/2);
+	// 	vip_write(vip, VIP_REG_CROP_Y, (in_height-out_height*scale_val)/2);
+	// 	vip_write(vip, VIP_REG_CROP_W, out_width*scale_val);
+	// 	vip_write(vip, VIP_REG_CROP_H, out_height*scale_val);
+	// 	vip_write(vip, VIP_REG_DSCALE_H, scale_val-1);
+	// 	vip_write(vip, VIP_REG_DSCALE_V, scale_val-1);
+	// } else {
+	// 	vip_write(vip, VIP_REG_CROP_X, (in_width-out_width)/2);
+	// 	vip_write(vip, VIP_REG_CROP_Y, (in_height-out_height)/2);
+	// 	vip_write(vip, VIP_REG_CROP_W, out_width);
+	// 	vip_write(vip, VIP_REG_CROP_H, out_height);
+	// }
 
-	vip_write(vip, VIP_REG_INT_STATUS, 0);
-	vip_write(vip, VIP_REG_INT_MASK, ~(VIP_REG_INT_MASK_BIT_FRAME_START|VIP_REG_INT_MASK_BIT_FRAME_DONE));
-	vip_write(vip, VIP_REG_RESET, 0);
+	// vip_write(vip, VIP_REG_INT_STATUS, 0);
+	// vip_write(vip, VIP_REG_INT_MASK, ~(VIP_REG_INT_MASK_BIT_FRAME_START|VIP_REG_INT_MASK_BIT_FRAME_DONE));
+	// vip_write(vip, VIP_REG_RESET, 0);
 
 	vip->streaming = true;
 
@@ -201,9 +171,9 @@ static int vip_start_stream(struct vip_state *vip)
 
 static void vip_stop_stream(struct vip_state *vip)
 {
-	vip_write(vip, VIP_REG_RESET, 1);
-	vip_write(vip, VIP_REG_INT_MASK, ~0U);
-	vip_write(vip, VIP_REG_INT_STATUS, 0);
+	// vip_write(vip, VIP_REG_RESET, 1);
+	// vip_write(vip, VIP_REG_INT_MASK, ~0U);
+	// vip_write(vip, VIP_REG_INT_STATUS, 0);
 
 	vip->streaming = false;
 }
@@ -250,27 +220,27 @@ static void vip_queue_event_frame_sync(struct vip_state *vip, u32 frame_seq)
  *
  * Return: IRQ_HANDLED after handling interrupts
  */
-static irqreturn_t vip_irq_handler(int irq, void *data)
-{
-	struct vip_state *vip = (struct vip_state *)data;
-	//struct device *dev = vip->dev;
-	u32 status;
+// static irqreturn_t vip_irq_handler(int irq, void *data)
+// {
+// 	struct vip_state *vip = (struct vip_state *)data;
+// 	//struct device *dev = vip->dev;
+// 	u32 status;
 
-	status = vip_read(vip, VIP_REG_INT_STATUS);
-	vip_write(vip, VIP_REG_INT_STATUS, 0);
+// 	status = vip_read(vip, VIP_REG_INT_STATUS);
+// 	vip_write(vip, VIP_REG_INT_STATUS, 0);
 
-	if (status & VIP_REG_INT_STATUS_BIT_FRAME_START) {
-		//dev_info(dev, "IRQ FRAME_START");
-		vip_queue_event_frame_sync(vip, 0);
-	}
+// 	if (status & VIP_REG_INT_STATUS_BIT_FRAME_START) {
+// 		//dev_info(dev, "IRQ FRAME_START");
+// 		vip_queue_event_frame_sync(vip, 0);
+// 	}
 
-	if (status & VIP_REG_INT_STATUS_BIT_FRAME_DONE) {
-		//XXX
-		//dev_info(dev, "IRQ FRAME_DONE");
-	}
+// 	if (status & VIP_REG_INT_STATUS_BIT_FRAME_DONE) {
+// 		//XXX
+// 		//dev_info(dev, "IRQ FRAME_DONE");
+// 	}
 
-	return IRQ_HANDLED;
-}
+// 	return IRQ_HANDLED;
+// }
 
 /**
  * vip_init_cfg - Initialise the pad format config to default
@@ -392,18 +362,53 @@ static int vip_get_format(struct v4l2_subdev *sd,
 {
 	struct vip_state *vip = to_vipstate(sd);
 	struct v4l2_mbus_framefmt *get_fmt;
+	struct media_pad *pad;
+	struct v4l2_subdev *connected_sd;
 	int ret = 0;
 
 	mutex_lock(&vip->lock);
 
-	get_fmt = __vip_get_pad_format(vip, sd_state, fmt->pad,
+	/* For pad 0, get the format from the connected sink pad */
+	if (fmt->pad == 0) {
+		/* Get the connected pad */
+		pad = media_entity_remote_pad(&vip->pads[0]);
+		if (!pad) {
+			ret = -ENOLINK;
+			goto unlock_get_format;
+		}
+
+		/* Get the connected subdev */
+		connected_sd = media_entity_to_v4l2_subdev(pad->entity);
+		if (!connected_sd) {
+			ret = -ENODEV;
+			dev_err(vip->dev, "No connected subdev for pad %d", fmt->pad);
+			goto unlock_get_format;
+		}
+
+		/* Get the format from the connected subdev's pad */
+		fmt->pad = pad->index;
+		ret = v4l2_subdev_call(connected_sd, pad, get_fmt, NULL, fmt);
+		if (ret) {
+			dev_err(vip->dev, "Failed to get format from connected subdev for pad %d", fmt->pad);
+			ret = -EINVAL;
+			goto unlock_get_format;
+		}
+
+		/* Restore the original pad number for logging */
+		fmt->pad = 0;
+	} else {
+		/* For other pads, get the format normally */
+		get_fmt = __vip_get_pad_format(vip, sd_state, fmt->pad,
 					     fmt->which);
-	if (!get_fmt) {
-		ret = -EINVAL;
-		goto unlock_get_format;
+		if (!get_fmt) {
+			ret = -EINVAL;
+			goto unlock_get_format;
+		}
+		fmt->format = *get_fmt;
 	}
 
-	fmt->format = *get_fmt;
+	dev_info(vip->dev, "VIP pad %d format: code=%08X, width=%u, height=%u",
+		fmt->pad, fmt->format.code, fmt->format.width, fmt->format.height);
 
 unlock_get_format:
 	mutex_unlock(&vip->lock);
@@ -440,12 +445,16 @@ static int vip_set_format(struct v4l2_subdev *sd,
 			break;
 		}
 	}
-	if (fmt->format.width <= vip->pad_format[VIP_PAD_SINK].width && fmt->format.height <= vip->pad_format[VIP_PAD_SINK].height) {
-		__format->width  = fmt->format.width;
-		__format->height = fmt->format.height;
-	}
+	// if (fmt->format.width <= vip->pad_format[VIP_PAD_SINK].width && fmt->format.height <= vip->pad_format[VIP_PAD_SINK].height) {
+	// 	__format->width  = fmt->format.width;
+	// 	__format->height = fmt->format.height;
+	// }
+	__format->width  = fmt->format.width;
+	__format->height = fmt->format.height;
 	fmt->format = *__format;
 
+	dev_info(vip->dev, "Set format for pad %d: code=%08X, width=%u, height=%u",
+		fmt->pad, fmt->format.code, fmt->format.width, fmt->format.height);
 unlock_set_format:
 	mutex_unlock(&vip->lock);
 
@@ -490,9 +499,9 @@ static int vip_get_hw_format(struct vip_state *vip)
 	struct device *dev = vip->dev;
 	struct v4l2_mbus_framefmt *format = NULL;
 
-	u32 width  = vip_read(vip, VIP_REG_WIDTH);
-	u32 height = vip_read(vip, VIP_REG_HEIGHT);
-	u32 bits   = vip_read(vip, VIP_REG_BITS);
+	u32 width  = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config, VIP_WIDTH);
+	u32 height = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config, VIP_HEIGHT);
+	u32 bits   = 8;
 	if (width < 1 || height < 1 || (bits != 8 && bits != 10 && bits != 12)) {
 		dev_err(dev, "Invalid HW formats. Resolution %u x %u, YUV%u",
 			width, height, bits);
@@ -524,24 +533,83 @@ static int vip_get_hw_format(struct vip_state *vip)
 	return 0;
 }
 
+static void isp_vip_init(struct REG_Infinite_ISP_VIP* infinite_isp_vip)
+{
+	unsigned int vip_top_en = 0;
+	if(RGBC_EN){
+		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_RGBC_EN = 1;
+	}
+	if(IRC_EN){
+		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_IRC_EN = 1;
+	}
+	if(SCALE_EN){
+		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_SCALE_EN = 1;
+	}
+	if(OSD_EN){
+		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_OSD_EN = 1;
+	}
+	if(YUV_CONV_FMT_EN){
+		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_YUVConvFormat_EN = 1;
+	}
+
+	infinite_isp_vip->rgbc.in_conv_standard = rgbc_conv_standard;
+
+	infinite_isp_vip->irc.CROP_X = width_start_idx;
+	infinite_isp_vip->irc.CROP_Y = height_start_idx;
+	infinite_isp_vip->irc.IRC_OUTPUT = 1;
+
+	infinite_isp_vip->scale.s_in_crop_w = 1920;
+	infinite_isp_vip->scale.s_in_crop_h = 1080;
+	infinite_isp_vip->scale.s_out_crop_w = 1920;
+	infinite_isp_vip->scale.s_out_crop_h = 1080;
+	infinite_isp_vip->scale.dscale_w = 1;
+	infinite_isp_vip->scale.dscale_h = 1;
+
+	infinite_isp_vip->yuvconvformat.YUV444TO422 = yuv_444_to_422;
+
+	{
+		unsigned int osd_x = 16;
+		unsigned int osd_y = 16;
+		unsigned int osd_w = 128;
+		unsigned int osd_h = 64;
+		unsigned int osd_color_fg = ( (0x00<<16) | (0x00<<8) | (0xff) );	// R, G, B
+		unsigned int osd_color_bg = ( (0xff<<16) | (0xff<<8) | (0xff) );	// R, G, B
+		unsigned int osd_alpha = 50;
+
+		infinite_isp_vip->osd.OSD_X = osd_x;
+		infinite_isp_vip->osd.OSD_Y = osd_y;
+		infinite_isp_vip->osd.OSD_W = osd_w;
+		infinite_isp_vip->osd.OSD_H = osd_h;
+		infinite_isp_vip->osd.OSD_COLOR_FG_B = 0xff;
+		infinite_isp_vip->osd.OSD_COLOR_FG_G = 0x00;
+		infinite_isp_vip->osd.OSD_COLOR_FG_R = 0x00;	// R, G, B
+		infinite_isp_vip->osd.OSD_COLOR_BG_B = 0xff;
+		infinite_isp_vip->osd.OSD_COLOR_BG_G = 0xff;
+		infinite_isp_vip->osd.OSD_COLOR_BG_R = 0xff;	// R, G, B
+		infinite_isp_vip->osd.ALPHA = osd_alpha;
+	}
+}
+
 static int vip_initialize_hw(struct vip_state *vip)
 {
-	//u32 width  = vip->pad_format[VIP_PAD_SINK].width;
-	//u32 height = vip->pad_format[VIP_PAD_SINK].height;
-	//u32 bits   = vip->bits;
-	unsigned int vip_top_en = 0;
+	struct REG_Infinite_ISP_VIP *infinite_isp_vip;
 
-	vip_write(vip, VIP_REG_RESET, 1);
-	vip_write(vip, VIP_REG_INT_MASK, ~0U);
+	infinite_isp_vip = kzalloc(sizeof(*infinite_isp_vip), GFP_KERNEL);
+	if (!infinite_isp_vip) {
+		return -ENOMEM;
+	}
 
-	//vip_top_en |= VIP_REG_TOP_EN_BIT_HIST_EQU_EN;
-	//vip_top_en |= VIP_REG_TOP_EN_BIT_SOBEL_EN;
-	//vip_top_en |= VIP_REG_TOP_EN_BIT_YUV2RGB_EN;
-	//vip_top_en |= VIP_REG_TOP_EN_BIT_CROP_EN;
-	//vip_top_en |= VIP_REG_TOP_EN_BIT_OSD_EN;
-	//vip_top_en |= VIP_REG_TOP_EN_BIT_DSCALE_EN;
-	vip_top_en |= VIP_REG_TOP_EN_BIT_YUV444TO422_EN;
-	vip_write(vip, VIP_REG_TOP_EN, vip_top_en);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 1);
+
+	isp_vip_init(infinite_isp_vip);
+
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, vip_config, &infinite_isp_vip->vip_config);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, rgbc, &infinite_isp_vip->rgbc);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, irc, &infinite_isp_vip->irc);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, scale, &infinite_isp_vip->scale);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, yuvconvformat, &infinite_isp_vip->yuvconvformat);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, osd, &infinite_isp_vip->osd);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 0);
 
 	return 0;
 }
@@ -550,7 +618,6 @@ static int vip_probe(struct platform_device *pdev)
 {
 	struct v4l2_subdev *subdev;
 	struct vip_state *vip;
-	int num_clks = ARRAY_SIZE(vip_clks);
 	struct device *dev = &pdev->dev;
 	int irq, ret;
 
@@ -562,43 +629,10 @@ static int vip_probe(struct platform_device *pdev)
 
 	vip->dev = dev;
 
-	vip->clks = devm_kmemdup(dev, vip_clks, sizeof(vip_clks), GFP_KERNEL);
-	if (!vip->clks) {
-		dev_err(dev, "No memory for vip clks");
-		return -ENOMEM;
-	}
-
 	vip->iomem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(vip->iomem)) {
 		dev_err(dev, "No iomem resource in DT");
 		return PTR_ERR(vip->iomem);
-	}
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(dev, "No irq resource in DT");
-		return irq;
-	}
-
-	ret = devm_request_threaded_irq(dev, irq, NULL,
-					vip_irq_handler, IRQF_ONESHOT,
-					dev_name(dev), vip);
-	if (ret) {
-		dev_err(dev, "Err = %d Interrupt handler reg failed!\n", ret);
-		return ret;
-	}
-
-	ret = devm_clk_bulk_get(dev, num_clks, vip->clks);
-	if (ret) {
-		dev_err(dev, "could not get clks");
-		return ret;
-	}
-
-	/* TODO: Enable/disable clocks at stream on/off time. */
-	ret = clk_bulk_prepare_enable(num_clks, vip->clks);
-	if (ret) {
-		dev_err(dev, "could not prepare enable clks");
-		return ret;
 	}
 
 	mutex_init(&vip->lock);
@@ -649,7 +683,6 @@ static int vip_probe(struct platform_device *pdev)
 error:
 	media_entity_cleanup(&subdev->entity);
 	mutex_destroy(&vip->lock);
-	clk_bulk_disable_unprepare(num_clks, vip->clks);
 	return ret;
 }
 
@@ -657,12 +690,10 @@ static int vip_remove(struct platform_device *pdev)
 {
 	struct vip_state *vip = platform_get_drvdata(pdev);
 	struct v4l2_subdev *subdev = &vip->subdev;
-	int num_clks = ARRAY_SIZE(vip_clks);
 
 	v4l2_async_unregister_subdev(subdev);
 	media_entity_cleanup(&subdev->entity);
 	mutex_destroy(&vip->lock);
-	clk_bulk_disable_unprepare(num_clks, vip->clks);
 
 	return 0;
 }

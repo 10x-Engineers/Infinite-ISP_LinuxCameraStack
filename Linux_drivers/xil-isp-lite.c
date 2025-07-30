@@ -21,101 +21,9 @@
 #include <media/videobuf2-vmalloc.h>
 #include <media/v4l2-ctrls.h>
 #include <linux/xil-isp-lite.h>
-
-////////////////////////////////////////////////////////////////////////////
-/* Register register map */
-
-#define ISP_REG_RESET                   (0  * 4)
-#define ISP_REG_WIDTH                   (1  * 4)
-#define ISP_REG_HEIGHT                  (2  * 4)
-#define ISP_REG_BITS                    (3  * 4)
-#define ISP_REG_BAYER                   (4  * 4)
-#define ISP_REG_TOP_EN                  (5  * 4)
-#define ISP_REG_DPC_THRESHOLD           (6  * 4)
-#define ISP_REG_BLC_R                   (7  * 4)
-#define ISP_REG_BLC_GR                  (8  * 4)
-#define ISP_REG_BLC_GB                  (9  * 4)
-#define ISP_REG_BLC_B                   (10 * 4)
-#define ISP_REG_NR_LEVEL                (11 * 4)
-#define ISP_REG_DGAIN_GAIN              (12 * 4)
-#define ISP_REG_DGAIN_OFFSET            (13 * 4)
-#define ISP_REG_WB_RGAIN                (14 * 4)
-#define ISP_REG_WB_GGAIN                (15 * 4)
-#define ISP_REG_WB_BGAIN                (16 * 4)
-#define ISP_REG_CCM_RR                  (17 * 4)
-#define ISP_REG_CCM_RG                  (18 * 4)
-#define ISP_REG_CCM_RB                  (19 * 4)
-#define ISP_REG_CCM_GR                  (20 * 4)
-#define ISP_REG_CCM_GG                  (21 * 4)
-#define ISP_REG_CCM_GB                  (22 * 4)
-#define ISP_REG_CCM_BR                  (23 * 4)
-#define ISP_REG_CCM_BG                  (24 * 4)
-#define ISP_REG_CCM_BB                  (25 * 4)
-#define ISP_REG_STAT_AE_RECT_X          (26 * 4)
-#define ISP_REG_STAT_AE_RECT_Y          (27 * 4)
-#define ISP_REG_STAT_AE_RECT_W          (28 * 4)
-#define ISP_REG_STAT_AE_RECT_H          (29 * 4)
-#define ISP_REG_STAT_AE_PIX_CNT_L       (30 * 4)
-#define ISP_REG_STAT_AE_PIX_CNT_H       (31 * 4)
-#define ISP_REG_STAT_AE_SUM_L           (32 * 4)
-#define ISP_REG_STAT_AE_SUM_H           (33 * 4)
-#define ISP_REG_STAT_AWB_MIN            (34 * 4)
-#define ISP_REG_STAT_AWB_MAX            (35 * 4)
-#define ISP_REG_STAT_AWB_PIX_CNT_L      (36 * 4)
-#define ISP_REG_STAT_AWB_PIX_CNT_H      (37 * 4)
-#define ISP_REG_STAT_AWB_SUM_R_L        (38 * 4)
-#define ISP_REG_STAT_AWB_SUM_R_H        (39 * 4)
-#define ISP_REG_STAT_AWB_SUM_G_L        (40 * 4)
-#define ISP_REG_STAT_AWB_SUM_G_H        (41 * 4)
-#define ISP_REG_STAT_AWB_SUM_B_L        (42 * 4)
-#define ISP_REG_STAT_AWB_SUM_B_H        (43 * 4)
-#define ISP_REG_INT_STATUS              (44 * 4)
-#define ISP_REG_INT_MASK                (45 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_0     (46 * 4) //0:[4:0], 1:[12:8], 2:[20:16], 3:[28:24]
-#define ISP_REG_2DNR_SPACE_WEIGHT_4     (47 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_8     (48 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_12    (49 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_16    (50 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_20    (51 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_24    (52 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_28    (53 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_32    (54 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_36    (55 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_40    (56 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_44    (57 * 4)
-#define ISP_REG_2DNR_SPACE_WEIGHT_48    (58 * 4) //48:[4:0]
-#define ISP_REG_2DNR_COLOR_CURVE_0      (59 * 4) //x0:[15:0] y0:[20:16]
-#define ISP_REG_2DNR_COLOR_CURVE_1      (60 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_2      (61 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_3      (62 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_4      (63 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_5      (64 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_6      (65 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_7      (66 * 4)
-#define ISP_REG_2DNR_COLOR_CURVE_8      (67 * 4)
-
-
-#define ISP_REG_STAT_AE_HIST_ADDR     	(1*1024*4)
-#define ISP_REG_STAT_AE_HIST_SIZE     	(4*256*4)
-#define ISP_REG_STAT_AWB_HIST_ADDR    	(2*1024*4)
-#define ISP_REG_STAT_AWB_HIST_SIZE      (3*256*4)
-#define ISP_REG_GAMMA_TABLE_ADDR      	(3*1024*4)
-#define ISP_REG_GAMMA_TABLE_SIZE      	(1*64*4)
-
-
-#define ISP_REG_TOP_EN_BIT_DPC_EN           (1<<0)
-#define ISP_REG_TOP_EN_BIT_BLC_EN           (1<<1)
-#define ISP_REG_TOP_EN_BIT_BNR_EN           (1<<2)
-#define ISP_REG_TOP_EN_BIT_DGAIN_EN         (1<<3)
-#define ISP_REG_TOP_EN_BIT_DEMOSIC_EN       (1<<4)
-#define ISP_REG_TOP_EN_BIT_WB_EN            (1<<5)
-#define ISP_REG_TOP_EN_BIT_CCM_EN           (1<<6)
-#define ISP_REG_TOP_EN_BIT_CSC_EN           (1<<7)
-#define ISP_REG_TOP_EN_BIT_GAMMA_EN         (1<<8)
-#define ISP_REG_TOP_EN_BIT_2DNR_EN          (1<<9)
-#define ISP_REG_TOP_EN_BIT_EE_EN            (1<<10)
-#define ISP_REG_TOP_EN_BIT_STAT_AE_EN       (1<<11)
-#define ISP_REG_TOP_EN_BIT_STAT_AWB_EN      (1<<12)
+#include <linux/isp_init.h>
+#include "infinite_isp_register.h"
+#include <linux/debugfs.h>
 
 #define ISP_REG_INT_STATUS_BIT_FRAME_START  (1<<0)
 #define ISP_REG_INT_STATUS_BIT_FRAME_DONE   (1<<1)
@@ -139,6 +47,7 @@
 #define ISP_BUS_NAME		"platform:" ISP_DRIVER_NAME
 #define ISP_STAT_DEV_NAME	ISP_DRIVER_NAME "_stat"
 
+
 struct isp_stat_buffer {
 	struct vb2_v4l2_buffer vb;
 	struct list_head list_node;
@@ -158,7 +67,8 @@ struct isp_state {
 	struct v4l2_mbus_framefmt pad_format[ISP_MEDIA_PADS];
 	struct device *dev;
 	struct clk_bulk_data *clks;
-	void __iomem *iomem;
+	void  *isp_base;
+	void  *luts_base;
 	u32 bits;
 	/* used to protect access to this struct */
 	struct mutex lock;
@@ -169,535 +79,187 @@ struct isp_state {
 
 	struct v4l2_ctrl_handler config_ctrls;
 	struct isp_stat_node    stat_node;
+
+    struct dentry *debug_dir;
+    u32 debug_reg_offset;
+    spinlock_t reg_lock;
 };
+
+#define DEFINE_ISP_GET_FUNC(module, reg_name) \
+static int isp_get_##module(struct isp_state *isp, struct REG_##reg_name *reg) \
+{ \
+    INFINITE_ISP_READ_MODULE_REGs(isp->isp_base, module, (void*)reg); \
+    return 0; \
+}
+#define DEFINE_ISP_SET_FUNC(module, reg_name) \
+static int isp_set_##module(struct isp_state *isp, const struct REG_##reg_name *reg) \
+{ \
+    INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, module, (void*)reg); \
+    return 0; \
+}
+
+#define DEFINE_ISP_FUNC(module, reg_name) \
+	DEFINE_ISP_GET_FUNC(module, reg_name) \
+	DEFINE_ISP_SET_FUNC(module, reg_name)
+
+DEFINE_ISP_FUNC(config, CONFIG)
+DEFINE_ISP_FUNC(dpc, DPC)
+DEFINE_ISP_FUNC(blc, BLC)
+DEFINE_ISP_FUNC(ae, AE)
+DEFINE_ISP_FUNC(dgain, DGAIN)
+DEFINE_ISP_FUNC(lsc, LSC)
+DEFINE_ISP_FUNC(awb, AWB)
+DEFINE_ISP_FUNC(wb, WB)
+DEFINE_ISP_FUNC(cfa, CFA)
+DEFINE_ISP_FUNC(ccm, CCM)
+DEFINE_ISP_FUNC(csc, CSC)
+DEFINE_ISP_FUNC(ldci, LDCI)
+DEFINE_ISP_FUNC(sharp, SHARP)
+DEFINE_ISP_FUNC(bnr, BNR)
+DEFINE_ISP_FUNC(_2dnr, 2DNR)
+
 
 static inline struct isp_state *to_ispstate(struct v4l2_subdev *subdev)
 {
 	return container_of(subdev, struct isp_state, subdev);
 }
 
-/*
- * Register related operations
- */
-static inline u32 isp_read(struct isp_state *isp, u32 addr)
-{
-	return ioread32(isp->iomem + addr);
-}
-
-static inline void isp_write(struct isp_state *isp, u32 addr,
-				   u32 value)
-{
-	iowrite32(value, isp->iomem + addr);
-}
-
-
-/////////////////////////////////////////////////////////////////////////////
-// ISP config/statistics
-
-static int isp_get_top (struct isp_state *isp, struct xil_isp_lite_top *top)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	*(u32*)top = top_en;
-	return 0;
-}
-
-static int isp_set_top (struct isp_state *isp, const struct xil_isp_lite_top *top)
-{
-	isp_write(isp, ISP_REG_TOP_EN, *(u32*)top);
-	return 0;
-}
-
-static int isp_get_dpc (struct isp_state *isp, struct xil_isp_lite_dpc *dpc)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	u32 thresh = isp_read(isp, ISP_REG_DPC_THRESHOLD);
-	dpc->enabled   = !!(top_en & ISP_REG_TOP_EN_BIT_DPC_EN);
-	dpc->threshold = thresh;
-	return 0;
-}
-
-static int isp_set_dpc (struct isp_state *isp, const struct xil_isp_lite_dpc *dpc)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = dpc->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_DPC_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_DPC_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_DPC_THRESHOLD, dpc->threshold);
-	return 0;
-}
-
-static int isp_get_blc (struct isp_state *isp, struct xil_isp_lite_blc *blc)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	blc->enabled   = !!(top_en & ISP_REG_TOP_EN_BIT_BLC_EN);
-	blc->black_level_r = isp_read(isp, ISP_REG_BLC_R);
-	blc->black_level_gr = isp_read(isp, ISP_REG_BLC_GR);
-	blc->black_level_gb = isp_read(isp, ISP_REG_BLC_GB);
-	blc->black_level_b = isp_read(isp, ISP_REG_BLC_B);
-	return 0;
-}
-
-static int isp_set_blc (struct isp_state *isp, const struct xil_isp_lite_blc *blc)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = blc->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_BLC_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_BLC_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_BLC_R, blc->black_level_r);
-	isp_write(isp, ISP_REG_BLC_GR, blc->black_level_gr);
-	isp_write(isp, ISP_REG_BLC_GB, blc->black_level_gb);
-	isp_write(isp, ISP_REG_BLC_B, blc->black_level_b);
-	return 0;
-}
-
-static int isp_get_bnr (struct isp_state *isp, struct xil_isp_lite_bnr *bnr)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	bnr->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_BNR_EN);
-	bnr->nr_level = isp_read(isp, ISP_REG_NR_LEVEL);
-	return 0;
-}
-
-static int isp_set_bnr (struct isp_state *isp, const struct xil_isp_lite_bnr *bnr)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = bnr->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_BNR_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_BNR_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_NR_LEVEL, bnr->nr_level);
-	return 0;
-}
-
-static int isp_get_dgain (struct isp_state *isp, struct xil_isp_lite_dgain *dgain)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	dgain->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_DGAIN_EN);
-	dgain->gain = isp_read(isp, ISP_REG_DGAIN_GAIN);
-	dgain->offset = isp_read(isp, ISP_REG_DGAIN_OFFSET);
-	return 0;
-}
-
-static int isp_set_dgain (struct isp_state *isp, const struct xil_isp_lite_dgain *dgain)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = dgain->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_DGAIN_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_DGAIN_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_DGAIN_GAIN, dgain->gain);
-	isp_write(isp, ISP_REG_DGAIN_OFFSET, dgain->offset);
-	return 0;
-}
-
-static int isp_get_demosaic (struct isp_state *isp, struct xil_isp_lite_demosaic *demosaic)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	demosaic->enabled   = !!(top_en & ISP_REG_TOP_EN_BIT_DEMOSIC_EN);
-	return 0;
-}
-
-static int isp_set_demosaic (struct isp_state *isp, const struct xil_isp_lite_demosaic *demosaic)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = demosaic->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_DEMOSIC_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_DEMOSIC_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	return 0;
-}
-
-static int isp_get_wb(struct isp_state *isp, struct xil_isp_lite_wb *wb)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	wb->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_WB_EN);
-	wb->rgain =  isp_read(isp, ISP_REG_WB_RGAIN);
-	wb->ggain =  isp_read(isp, ISP_REG_WB_GGAIN);
-	wb->bgain =  isp_read(isp, ISP_REG_WB_BGAIN);
-	return 0;
-}
-
-static int isp_set_wb(struct isp_state *isp, const struct xil_isp_lite_wb *wb)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = wb->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_WB_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_WB_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_WB_RGAIN, wb->rgain);
-	isp_write(isp, ISP_REG_WB_GGAIN, wb->ggain);
-	isp_write(isp, ISP_REG_WB_BGAIN, wb->bgain);
-	return 0;
-}
-
-static int isp_get_ccm(struct isp_state *isp, struct xil_isp_lite_ccm *ccm)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	ccm->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_CCM_EN);
-	ccm->matrix[0] = isp_read(isp, ISP_REG_CCM_RR);
-	ccm->matrix[1] = isp_read(isp, ISP_REG_CCM_RG);
-	ccm->matrix[2] = isp_read(isp, ISP_REG_CCM_RB);
-	ccm->matrix[3] = isp_read(isp, ISP_REG_CCM_GR);
-	ccm->matrix[4] = isp_read(isp, ISP_REG_CCM_GG);
-	ccm->matrix[5] = isp_read(isp, ISP_REG_CCM_GB);
-	ccm->matrix[6] = isp_read(isp, ISP_REG_CCM_BR);
-	ccm->matrix[7] = isp_read(isp, ISP_REG_CCM_BG);
-	ccm->matrix[8] = isp_read(isp, ISP_REG_CCM_BB);
-	return 0;
-}
-
-static int isp_set_ccm(struct isp_state *isp, const struct xil_isp_lite_ccm *ccm)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = ccm->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_CCM_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_CCM_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_CCM_RR, ccm->matrix[0]);
-	isp_write(isp, ISP_REG_CCM_RG, ccm->matrix[1]);
-	isp_write(isp, ISP_REG_CCM_RB, ccm->matrix[2]);
-	isp_write(isp, ISP_REG_CCM_GR, ccm->matrix[3]);
-	isp_write(isp, ISP_REG_CCM_GG, ccm->matrix[4]);
-	isp_write(isp, ISP_REG_CCM_GB, ccm->matrix[5]);
-	isp_write(isp, ISP_REG_CCM_BR, ccm->matrix[6]);
-	isp_write(isp, ISP_REG_CCM_BG, ccm->matrix[7]);
-	isp_write(isp, ISP_REG_CCM_BB, ccm->matrix[8]);
-	return 0;
-}
-
-static int isp_get_csc(struct isp_state *isp, struct xil_isp_lite_csc *csc)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	csc->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_CSC_EN);
-	return 0;
-}
-
-static int isp_set_csc(struct isp_state *isp, const struct xil_isp_lite_csc *csc)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = csc->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_CSC_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_CSC_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	return 0;
-}
-
-static int isp_get_gamma(struct isp_state *isp, struct xil_isp_lite_gamma *gamma)
-{
-	u32 i;
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	gamma->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_GAMMA_EN);
-	for (i = 0; i < ARRAY_SIZE(gamma->gamma_table); i ++) {
-		gamma->gamma_table[i] = isp_read(isp, ISP_REG_GAMMA_TABLE_ADDR + i * 4);
-	}
-	return 0;
-}
-
-static int isp_set_gamma(struct isp_state *isp, const struct xil_isp_lite_gamma *gamma)
-{
-	u32 i;
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = gamma->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_GAMMA_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_GAMMA_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	for (i = 0; i < ARRAY_SIZE(gamma->gamma_table); i ++) {
-		isp_write(isp, ISP_REG_GAMMA_TABLE_ADDR + i * 4, gamma->gamma_table[i]);
-	}
-	return 0;
-}
-
-static int isp_get_2dnr(struct isp_state *isp, struct xil_isp_lite_2dnr *nr2d)
-{
-	u32 i;
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	nr2d->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_2DNR_EN);
-	for (i = 0; i < ARRAY_SIZE(nr2d->space_weight); i += 4) {
-		u32 data = isp_read(isp, ISP_REG_2DNR_SPACE_WEIGHT_0 + i * 4);
-		nr2d->space_weight[i] = (data >> 0) & 0x0ff;
-		if (i + 1 < ARRAY_SIZE(nr2d->space_weight))
-			nr2d->space_weight[i+1] = (data >> 8) & 0x0ff;
-		if (i + 2 < ARRAY_SIZE(nr2d->space_weight))
-			nr2d->space_weight[i+2] = (data >> 16) & 0x0ff;
-		if (i + 3 < ARRAY_SIZE(nr2d->space_weight))
-			nr2d->space_weight[i+3] = (data >> 24) & 0x0ff;
-	}
-	for (i = 0; i < ARRAY_SIZE(nr2d->color_curve); i++) {
-		u32 data = isp_read(isp, ISP_REG_2DNR_COLOR_CURVE_0 + i * 4);
-		nr2d->color_curve[i][0] = (data >> (isp->bits-8)) & 0x0ff;
-		nr2d->color_curve[i][1] = (data >> 16) & 0x0ff;
-	}
-	return 0;
-}
-
-static int isp_set_2dnr(struct isp_state *isp, const struct xil_isp_lite_2dnr *nr2d)
-{
-	u32 i;
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = nr2d->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_2DNR_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_2DNR_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	for (i = 0; i < ARRAY_SIZE(nr2d->space_weight); i += 4) {
-		u32 data = nr2d->space_weight[i];
-		if (i + 1 < ARRAY_SIZE(nr2d->space_weight))
-			data |= nr2d->space_weight[i+1] << 8;
-		if (i + 2 < ARRAY_SIZE(nr2d->space_weight))
-			data |= nr2d->space_weight[i+2] << 16;
-		if (i + 3 < ARRAY_SIZE(nr2d->space_weight))
-			data |= nr2d->space_weight[i+3] << 24;
-		isp_write(isp, ISP_REG_2DNR_SPACE_WEIGHT_0 + i * 4, data);
-	}
-	for (i = 0; i < ARRAY_SIZE(nr2d->color_curve); i++) {
-		u32 data = (nr2d->color_curve[i][0] << (isp->bits - 8)) | (nr2d->color_curve[i][1] << 16);
-		isp_write(isp, ISP_REG_2DNR_COLOR_CURVE_0 + i * 4, data);
-	}
-	return 0;
-}
-
-static int isp_get_ee(struct isp_state *isp, struct xil_isp_lite_ee *ee)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	ee->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_EE_EN);
-	return 0;
-}
-
-static int isp_set_ee(struct isp_state *isp, const struct xil_isp_lite_ee *ee)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = ee->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_EE_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_EE_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	return 0;
-}
-
-static int isp_get_stat_ae_cfg(struct isp_state *isp, struct xil_isp_lite_stat_ae_cfg *ae_cfg)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	ae_cfg->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_STAT_AE_EN);
-	ae_cfg->rect_x = isp_read(isp, ISP_REG_STAT_AE_RECT_X);
-	ae_cfg->rect_y = isp_read(isp, ISP_REG_STAT_AE_RECT_Y);
-	ae_cfg->rect_w = isp_read(isp, ISP_REG_STAT_AE_RECT_W);
-	ae_cfg->rect_h = isp_read(isp, ISP_REG_STAT_AE_RECT_H);
-	return 0;
-}
-
-static int isp_set_stat_ae_cfg(struct isp_state *isp, const struct xil_isp_lite_stat_ae_cfg *ae_cfg)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = ae_cfg->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_STAT_AE_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_STAT_AE_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_STAT_AE_RECT_X, ae_cfg->rect_x);
-	isp_write(isp, ISP_REG_STAT_AE_RECT_Y, ae_cfg->rect_y);
-	isp_write(isp, ISP_REG_STAT_AE_RECT_W, ae_cfg->rect_w);
-	isp_write(isp, ISP_REG_STAT_AE_RECT_H, ae_cfg->rect_h);
-	return 0;
-}
-
-static int isp_get_stat_awb_cfg(struct isp_state *isp, struct xil_isp_lite_stat_awb_cfg *awb_cfg)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	awb_cfg->enabled = !!(top_en & ISP_REG_TOP_EN_BIT_STAT_AWB_EN);
-	awb_cfg->thresh_min = isp_read(isp, ISP_REG_STAT_AWB_MIN);
-	awb_cfg->thresh_max = isp_read(isp, ISP_REG_STAT_AWB_MAX);
-	return 0;
-}
-
-static int isp_set_stat_awb_cfg(struct isp_state *isp, const struct xil_isp_lite_stat_awb_cfg *awb_cfg)
-{
-	u32 top_en = isp_read(isp, ISP_REG_TOP_EN);
-	top_en = awb_cfg->enabled ?
-		(top_en |  ISP_REG_TOP_EN_BIT_STAT_AWB_EN) :
-		(top_en & ~ISP_REG_TOP_EN_BIT_STAT_AWB_EN) ;
-	isp_write(isp, ISP_REG_TOP_EN, top_en);
-	isp_write(isp, ISP_REG_STAT_AWB_MIN, awb_cfg->thresh_min);
-	isp_write(isp, ISP_REG_STAT_AWB_MAX, awb_cfg->thresh_max);
-	return 0;
-}
-
-static int isp_get_stat_ae_result(struct isp_state *isp, struct xil_isp_lite_stat_ae_result *ae_result)
-{
-	u32 i;
-	ae_result->pix_cnt  = isp_read(isp, ISP_REG_STAT_AE_PIX_CNT_L);
-	ae_result->pix_cnt |= (u64)isp_read(isp, ISP_REG_STAT_AE_PIX_CNT_H) << 32;
-	ae_result->sum  = isp_read(isp, ISP_REG_STAT_AE_SUM_L);
-	ae_result->sum |= (u64)isp_read(isp, ISP_REG_STAT_AE_SUM_H) << 32;
-	for (i = 0; i < XIL_ISP_LITE_AE_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AE_HIST_BIN_NUM * 4 * 0 + i * 4;
-		ae_result->hist_r[i] = isp_read(isp, ISP_REG_STAT_AE_HIST_ADDR + offset);
-	}
-	for (i = 0; i < XIL_ISP_LITE_AE_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AE_HIST_BIN_NUM * 4 * 1 + i * 4;
-		ae_result->hist_gr[i] = isp_read(isp, ISP_REG_STAT_AE_HIST_ADDR + offset);
-	}
-	for (i = 0; i < XIL_ISP_LITE_AE_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AE_HIST_BIN_NUM * 4 * 2 + i * 4;
-		ae_result->hist_gb[i] = isp_read(isp, ISP_REG_STAT_AE_HIST_ADDR + offset);
-	}
-	for (i = 0; i < XIL_ISP_LITE_AE_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AE_HIST_BIN_NUM * 4 * 3 + i * 4;
-		ae_result->hist_b[i] = isp_read(isp, ISP_REG_STAT_AE_HIST_ADDR + offset);
-	}
-	return 0;
-}
-
-static int isp_get_stat_awb_result(struct isp_state *isp, struct xil_isp_lite_stat_awb_result *awb_result)
-{
-	u32 i;
-	awb_result->pix_cnt  = isp_read(isp, ISP_REG_STAT_AWB_PIX_CNT_L);
-	awb_result->pix_cnt |= (u64)isp_read(isp, ISP_REG_STAT_AWB_PIX_CNT_H) << 32;
-	awb_result->sum_r  = isp_read(isp, ISP_REG_STAT_AWB_SUM_R_L);
-	awb_result->sum_r |= (u64)isp_read(isp, ISP_REG_STAT_AWB_SUM_R_H) << 32;
-	awb_result->sum_g  = isp_read(isp, ISP_REG_STAT_AWB_SUM_G_L);
-	awb_result->sum_g |= (u64)isp_read(isp, ISP_REG_STAT_AWB_SUM_G_H) << 32;
-	awb_result->sum_b  = isp_read(isp, ISP_REG_STAT_AWB_SUM_B_L);
-	awb_result->sum_b |= (u64)isp_read(isp, ISP_REG_STAT_AWB_SUM_B_H) << 32;
-	for (i = 0; i < XIL_ISP_LITE_AWB_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AWB_HIST_BIN_NUM * 4 * 0 + i * 4;
-		awb_result->hist_r[i] = isp_read(isp, ISP_REG_STAT_AWB_HIST_ADDR + offset);
-	}
-	for (i = 0; i < XIL_ISP_LITE_AWB_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AWB_HIST_BIN_NUM * 4 * 1 + i * 4;
-		awb_result->hist_g[i] = isp_read(isp, ISP_REG_STAT_AWB_HIST_ADDR + offset);
-	}
-	for (i = 0; i < XIL_ISP_LITE_AWB_HIST_BIN_NUM; i++) {
-		u32 offset = XIL_ISP_LITE_AWB_HIST_BIN_NUM * 4 * 2 + i * 4;
-		awb_result->hist_b[i] = isp_read(isp, ISP_REG_STAT_AWB_HIST_ADDR + offset);
-	}
-	return 0;
-}
-
 /////////////////////////////////////////////////////////////////////////////
 // ISP config ctrls
 
+struct xil_isp_reg {
+    unsigned int reg;
+    unsigned int val;
+};
+
 static int isp_config_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct isp_state *isp = container_of(ctrl->handler, struct isp_state, config_ctrls);
-	int ret = 0;
+    struct isp_state *isp = container_of(ctrl->handler, 
+                                      struct isp_state, 
+                                      config_ctrls);
+    int ret = 0;
 
-	switch (ctrl->id) {
-	case V4L2_CID_USER_XIL_ISP_LITE_TOP:
-		ret = isp_get_top(isp, (struct xil_isp_lite_top*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_DPC:
-		ret = isp_get_dpc(isp, (struct xil_isp_lite_dpc*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_BLC:
-		ret = isp_get_blc(isp, (struct xil_isp_lite_blc*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_BNR:
-		ret = isp_get_bnr(isp, (struct xil_isp_lite_bnr*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_DGAIN:
-		ret = isp_get_dgain(isp, (struct xil_isp_lite_dgain*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_DEMOSAIC:
-		ret = isp_get_demosaic(isp, (struct xil_isp_lite_demosaic*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_WB:
-		ret = isp_get_wb(isp, (struct xil_isp_lite_wb*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_CCM:
-		ret = isp_get_ccm(isp, (struct xil_isp_lite_ccm*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_CSC:
-		ret = isp_get_csc(isp, (struct xil_isp_lite_csc*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_GAMMA:
-		ret = isp_get_gamma(isp, (struct xil_isp_lite_gamma*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_2DNR:
-		ret = isp_get_2dnr(isp, (struct xil_isp_lite_2dnr*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_EE:
-		ret = isp_get_ee(isp, (struct xil_isp_lite_ee*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_STAT_AE_CFG:
-		ret = isp_get_stat_ae_cfg(isp, (struct xil_isp_lite_stat_ae_cfg*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_STAT_AWB_CFG:
-		ret = isp_get_stat_awb_cfg(isp, (struct xil_isp_lite_stat_awb_cfg*)ctrl->p_new.p_u8);
-		break;
-	default:
-		dev_err(isp->dev, "Unrecognised control\n");
-		ret = -EINVAL;
-	}
+    switch (ctrl->id) {
+    case V4L2_CID_USER_XIL_ISP_LITE_CONFIG:
+        ret = isp_get_config(isp, (struct REG_CONFIG *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_DPC:
+        ret = isp_get_dpc(isp, (struct REG_DPC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_BLC:
+        ret = isp_get_blc(isp, (struct REG_BLC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_AE:
+        ret = isp_get_ae(isp, (struct REG_AE *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_DGAIN:
+        ret = isp_get_dgain(isp, (struct REG_DGAIN *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_LSC:
+        ret = isp_get_lsc(isp, (struct REG_LSC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_AWB:
+        ret = isp_get_awb(isp, (struct REG_AWB *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_WB:
+        ret = isp_get_wb(isp, (struct REG_WB *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_CFA:
+        ret = isp_get_cfa(isp, (struct REG_CFA *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_CCM:
+        ret = isp_get_ccm(isp, (struct REG_CCM *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_CSC:
+        ret = isp_get_csc(isp, (struct REG_CSC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_LDCI:
+        ret = isp_get_ldci(isp, (struct REG_LDCI *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_SHARP:
+        ret = isp_get_sharp(isp, (struct REG_SHARP *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_BNR:
+        ret = isp_get_bnr(isp, (struct REG_BNR *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_2DNR:
+        ret = isp_get__2dnr(isp, (struct REG_2DNR *)ctrl->p_new.p_u8);
+        break;
+	case V4L2_CID_USER_READ_CSR:
+		{
+			struct xil_isp_reg *reg = ctrl->p_new.p;
+			reg->val = ioread32(isp->isp_base + (reg->reg & 0xffff));
+			return 0;
+		}
+    default:
+        ret = -EINVAL;
+        break;
+    }
 
-	if (ret) {
-		dev_err(isp->dev, "%s: Failed getting ctrl \"%s\" (%08x), err %d\n",
-			 __func__, ctrl->name, ctrl->id, ret);
-		ret = -EIO;
-	}
-
-	return ret;
+    return ret;
 }
 
 static int isp_config_s_ctrl(struct v4l2_ctrl *ctrl)
 {
-	struct isp_state *isp = container_of(ctrl->handler, struct isp_state, config_ctrls);
-	int ret = 0;
+    struct isp_state *isp = container_of(ctrl->handler, 
+                                      struct isp_state, 
+                                      config_ctrls);
+    int ret = 0;
 
-	switch (ctrl->id) {
-	case V4L2_CID_USER_XIL_ISP_LITE_TOP:
-		ret = isp_set_top(isp, (struct xil_isp_lite_top*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_DPC:
-		ret = isp_set_dpc(isp, (struct xil_isp_lite_dpc*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_BLC:
-		ret = isp_set_blc(isp, (struct xil_isp_lite_blc*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_BNR:
-		ret = isp_set_bnr(isp, (struct xil_isp_lite_bnr*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_DGAIN:
-		ret = isp_set_dgain(isp, (struct xil_isp_lite_dgain*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_DEMOSAIC:
-		ret = isp_set_demosaic(isp, (struct xil_isp_lite_demosaic*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_WB:
-		ret = isp_set_wb(isp, (struct xil_isp_lite_wb*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_CCM:
-		ret = isp_set_ccm(isp, (struct xil_isp_lite_ccm*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_CSC:
-		ret = isp_set_csc(isp, (struct xil_isp_lite_csc*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_GAMMA:
-		ret = isp_set_gamma(isp, (struct xil_isp_lite_gamma*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_2DNR:
-		ret = isp_set_2dnr(isp, (struct xil_isp_lite_2dnr*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_EE:
-		ret = isp_set_ee(isp, (struct xil_isp_lite_ee*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_STAT_AE_CFG:
-		ret = isp_set_stat_ae_cfg(isp, (struct xil_isp_lite_stat_ae_cfg*)ctrl->p_new.p_u8);
-		break;
-	case V4L2_CID_USER_XIL_ISP_LITE_STAT_AWB_CFG:
-		ret = isp_set_stat_awb_cfg(isp, (struct xil_isp_lite_stat_awb_cfg*)ctrl->p_new.p_u8);
-		break;
-	default:
-		dev_err(isp->dev, "Unrecognised control\n");
-		ret = -EINVAL;
-	}
+    switch (ctrl->id) {
+    case V4L2_CID_USER_XIL_ISP_LITE_CONFIG:
+        ret = isp_set_config(isp, (const struct REG_CONFIG *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_DPC:
+        ret = isp_set_dpc(isp, (const struct REG_DPC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_BLC:
+        ret = isp_set_blc(isp, (const struct REG_BLC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_AE:
+        ret = isp_set_ae(isp, (const struct REG_AE *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_DGAIN:
+        ret = isp_set_dgain(isp, (const struct REG_DGAIN *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_LSC:
+        ret = isp_set_lsc(isp, (const struct REG_LSC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_AWB:
+        ret = isp_set_awb(isp, (const struct REG_AWB *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_WB:
+        ret = isp_set_wb(isp, (const struct REG_WB *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_CFA:
+        ret = isp_set_cfa(isp, (const struct REG_CFA *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_CCM:
+        ret = isp_set_ccm(isp, (const struct REG_CCM *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_CSC:
+        ret = isp_set_csc(isp, (const struct REG_CSC *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_LDCI:
+        ret = isp_set_ldci(isp, (const struct REG_LDCI *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_SHARP:
+        ret = isp_set_sharp(isp, (const struct REG_SHARP *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_BNR:
+        ret = isp_set_bnr(isp, (const struct REG_BNR *)ctrl->p_new.p_u8);
+        break;
+    case V4L2_CID_USER_XIL_ISP_LITE_2DNR:
+        ret = isp_set__2dnr(isp, (const struct REG_2DNR *)ctrl->p_new.p_u8);
+        break;
+    default:
+        ret = -EINVAL;
+        break;
+    }
 
-	if (ret) {
-		dev_err(isp->dev, "%s: Failed setting ctrl \"%s\" (%08x), err %d\n",
-			 __func__, ctrl->name, ctrl->id, ret);
-		ret = -EIO;
-	}
-
-	return ret;
+    return ret;
 }
+
 
 static const struct v4l2_ctrl_ops isp_config_ctrl_ops = {
 	.g_volatile_ctrl = isp_config_g_volatile_ctrl,
@@ -713,76 +275,86 @@ struct isp_config_custom_ctrl {
 
 static const struct isp_config_custom_ctrl custom_ctrls[] = {
 	{
-		.name	= "ISP Top control",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_TOP,
-		.size	= sizeof(struct xil_isp_lite_top),
-		.flags  = 0
+		.name	= "ISP Full Register Control",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_ALL,
+		.size	= sizeof(struct REG_Infinite_ISP),
+		.flags	= 0
+	}, {
+		.name	= "ISP Configuration Control",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_CONFIG,
+		.size	= sizeof(struct REG_CONFIG),
+		.flags	= 0
 	}, {
 		.name	= "DPC - Defective Pixel Correction",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_DPC,
-		.size	= sizeof(struct xil_isp_lite_dpc),
-		.flags  = 0
+		.size	= sizeof(struct REG_DPC),
+		.flags	= 0
 	}, {
 		.name	= "BLC - Black Level Correction",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_BLC,
-		.size	= sizeof(struct xil_isp_lite_blc),
-		.flags  = 0
+		.size	= sizeof(struct REG_BLC),
+		.flags	= 0
 	}, {
-		.name	= "BNR - Bayer Noise Reduction",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_BNR,
-		.size	= sizeof(struct xil_isp_lite_bnr),
-		.flags  = 0
+		.name	= "AE - Auto Exposure",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_AE,
+		.size	= sizeof(struct REG_AE),
+		.flags	= 0
 	}, {
 		.name	= "DGAIN - Digital Gain",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_DGAIN,
-		.size	= sizeof(struct xil_isp_lite_dgain),
-		.flags  = 0
+		.size	= sizeof(struct REG_DGAIN),
+		.flags	= 0
 	}, {
-		.name	= "Demosaic - Bayer to RGB",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_DEMOSAIC,
-		.size	= sizeof(struct xil_isp_lite_demosaic),
-		.flags  = 0
+		.name	= "LSC - Lens Shading Correction",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_LSC,
+		.size	= sizeof(struct REG_LSC),
+		.flags	= 0
+	}, {
+		.name	= "AWB - Auto White Balance",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_AWB,
+		.size	= sizeof(struct REG_AWB),
+		.flags	= 0
 	}, {
 		.name	= "WB - White Balance",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_WB,
-		.size	= sizeof(struct xil_isp_lite_wb),
-		.flags  = 0
+		.size	= sizeof(struct REG_WB),
+		.flags	= 0
+	}, {
+		.name	= "CFA - Color Filter Array",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_CFA,
+		.size	= sizeof(struct REG_CFA),
+		.flags	= 0
 	}, {
 		.name	= "CCM - Color Correction Matrix",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_CCM,
-		.size	= sizeof(struct xil_isp_lite_ccm),
-		.flags  = 0
+		.size	= sizeof(struct REG_CCM),
+		.flags	= 0
 	}, {
-		.name	= "CSC - Color Space Conversion (RGB to YUV)",
+		.name	= "CSC - Color Space Conversion",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_CSC,
-		.size	= sizeof(struct xil_isp_lite_csc),
-		.flags  = 0
+		.size	= sizeof(struct REG_CSC),
+		.flags	= 0
 	}, {
-		.name	= "Gamma - Gamma",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_GAMMA,
-		.size	= sizeof(struct xil_isp_lite_gamma),
-		.flags  = 0
+		.name	= "LDCI - Local Dynamic Contrast Improvement",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_LDCI,
+		.size	= sizeof(struct REG_LDCI),
+		.flags	= 0
 	}, {
-		.name	= "2DNR - Bayer Noise Reduction",
+		.name	= "Sharpness Control",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_SHARP,
+		.size	= sizeof(struct REG_SHARP),
+		.flags	= 0
+	}, {
+		.name	= "BNR - Bayer Noise Reduction",
+		.id	= V4L2_CID_USER_XIL_ISP_LITE_BNR,
+		.size	= sizeof(struct REG_BNR),
+		.flags	= 0
+	}, {
+		.name	= "2DNR - 2D Noise Reduction",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_2DNR,
-		.size	= sizeof(struct xil_isp_lite_2dnr),
-		.flags  = 0
-	}, {
-		.name	= "EE - Edge Enhancement",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_EE,
-		.size	= sizeof(struct xil_isp_lite_ee),
-		.flags  = 0
-	}, {
-		.name	= "AE_CFG - Configure to Auto Exposure Statistics",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_STAT_AE_CFG,
-		.size	= sizeof(struct xil_isp_lite_stat_ae_cfg),
-		.flags  = 0
-	}, {
-		.name	= "AWB_CFG - Configure to Auto White Balance Statistics",
-		.id	= V4L2_CID_USER_XIL_ISP_LITE_STAT_AWB_CFG,
-		.size	= sizeof(struct xil_isp_lite_stat_awb_cfg),
-		.flags  = 0
-	}
+		.size	= sizeof(struct REG_2DNR),
+		.flags	= 0
+	},
 };
 
 static int isp_config_init_ctrl_handler(struct isp_state *isp)
@@ -1001,8 +573,8 @@ static void isp_stat_send_measurement(struct isp_stat_node *node)
 		struct xil_isp_lite_stat_result *stat_result = NULL;
 		stat_result = (struct xil_isp_lite_stat_result *)vb2_plane_vaddr(&buffer->vb.vb2_buf, 0);
 
-		isp_get_stat_ae_result(isp, &stat_result->ae);
-		isp_get_stat_awb_result(isp, &stat_result->awb);
+		// isp_get_stat_ae_result(isp, &stat_result->ae);
+		// isp_get_stat_awb_result(isp, &stat_result->awb);
 
 		vb2_set_plane_payload(&buffer->vb.vb2_buf, 0, sizeof(struct xil_isp_lite_stat_result));
 		buffer->vb.sequence = frame_sequence;
@@ -1081,10 +653,10 @@ static int isp_log_status(struct v4l2_subdev *sd)
 
 	mutex_lock(&isp->lock);
 
-	width  = isp_read(isp, ISP_REG_WIDTH);
-	height = isp_read(isp, ISP_REG_HEIGHT);
-	bits   = isp_read(isp, ISP_REG_BITS);
-	bayer  = isp_read(isp, ISP_REG_BAYER);
+	width  = INFINITE_ISP_READ_REG(isp->isp_base, config, SNS_WIDTH);
+	height = INFINITE_ISP_READ_REG(isp->isp_base, config, SNS_HEIGHT);
+	bits   = INFINITE_ISP_READ_REG(isp->isp_base, config, BITS);
+	bayer  = INFINITE_ISP_READ_REG(isp->isp_base, config, BAYER);
 	dev_info(dev, "ISP Lite %u x %u RAW%u Bayer %u, stat_result_size %lu",
 			width, height, bits, bayer, sizeof(struct xil_isp_lite_stat_result));
 
@@ -1108,10 +680,9 @@ static int isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 
 static int isp_start_stream(struct isp_state *isp)
 {
-	isp_write(isp, ISP_REG_INT_STATUS, 0);
-	//isp_write(isp, ISP_REG_INT_MASK, ~(ISP_REG_INT_MASK_BIT_FRAME_START|ISP_REG_INT_MASK_BIT_FRAME_DONE|ISP_REG_INT_MASK_BIT_AE_DONE|ISP_REG_INT_MASK_BIT_AWB_DONE));
-	isp_write(isp, ISP_REG_INT_MASK, ~(ISP_REG_INT_MASK_BIT_FRAME_START|ISP_REG_INT_MASK_BIT_FRAME_DONE));
-	isp_write(isp, ISP_REG_RESET, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~(ISP_REG_INT_MASK_BIT_FRAME_START|ISP_REG_INT_MASK_BIT_FRAME_DONE));
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 0);
 
 	isp->frame_sequence = 0;
 	isp->int_status = 0;
@@ -1122,9 +693,9 @@ static int isp_start_stream(struct isp_state *isp)
 
 static void isp_stop_stream(struct isp_state *isp)
 {
-	isp_write(isp, ISP_REG_RESET, 1);
-	isp_write(isp, ISP_REG_INT_MASK, ~0U);
-	isp_write(isp, ISP_REG_INT_STATUS, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
 
 	isp->streaming = false;
 }
@@ -1145,10 +716,10 @@ static irqreturn_t isp_irq_handler(int irq, void *data)
 	//struct device *dev = isp->dev;
 	u32 status, done_mask;
 
-	status = isp_read(isp, ISP_REG_INT_STATUS);
-	isp_write(isp, ISP_REG_INT_STATUS, 0);
+	status = INFINITE_ISP_READ_REG(isp->isp_base, config, INT_STATUS);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
 
-	//dev_info(dev, "IRQ status %08X", status);
+	pr_info("IRQ status %08X", status);
 
 	if (status & ISP_REG_INT_STATUS_BIT_FRAME_START) {
 		//dev_info(dev, "IRQ FRAME_START");
@@ -1156,52 +727,6 @@ static irqreturn_t isp_irq_handler(int irq, void *data)
 		isp->int_status = ISP_REG_INT_STATUS_BIT_FRAME_START;
 		return IRQ_HANDLED;
 	}
-
-#if 0
-	if (status & ISP_REG_INT_STATUS_BIT_AE_DONE) {
-		dev_info(dev, "IRQ AE_DONE");
-		static struct xil_isp_lite_stat_ae_result ae_result;
-		u64 hist_r_cnt = 0;
-		u64 hist_gr_cnt = 0;
-		u64 hist_gb_cnt = 0;
-		u64 hist_b_cnt = 0;
-		u32 i;
-		isp_get_stat_ae_result(isp, &ae_result);
-		for (i = 0; i < XIL_ISP_LITE_AE_HIST_BIN_NUM; i ++) {
-			hist_r_cnt += ae_result.hist_r[i];
-			hist_gr_cnt += ae_result.hist_gr[i];
-			hist_gb_cnt += ae_result.hist_gb[i];
-			hist_b_cnt += ae_result.hist_b[i];
-		}
-		dev_info(dev, "IRQ AE_DONE avg-raw %llu, pix_cnt %llu, sum %llu, r_cnt %llu, gr_cnt %llu, gb_cnt %llu, b_cnt %llu",
-					ae_result.sum/ae_result.pix_cnt, ae_result.pix_cnt, ae_result.sum,
-					hist_r_cnt, hist_gr_cnt, hist_gb_cnt, hist_b_cnt);
-	}
-	if (status & ISP_REG_INT_STATUS_BIT_AWB_DONE) {
-		dev_info(dev, "IRQ AWB_DONE");
-		static struct xil_isp_lite_stat_awb_result awb_result;
-		u64 hist_r_cnt = 0;
-		u64 hist_g_cnt = 0;
-		u64 hist_b_cnt = 0;
-		u32 i;
-		isp_get_stat_awb_result(isp, &awb_result);
-		for (i = 0; i < XIL_ISP_LITE_AWB_HIST_BIN_NUM; i ++) {
-			hist_r_cnt += awb_result.hist_r[i];
-			hist_g_cnt += awb_result.hist_g[i];
-			hist_b_cnt += awb_result.hist_b[i];
-		}
-		dev_info(dev, "IRQ AWB_DONE avg-rgb %llu,%llu,%llu, pix_cnt %llu, sum_r %llu, sum_g %llu, sum_b %llu, r_cnt %llu, g_cnt %llu, b_cnt %llu",
-					awb_result.sum_r/awb_result.pix_cnt,
-					awb_result.sum_g/awb_result.pix_cnt,
-					awb_result.sum_b/awb_result.pix_cnt,
-					awb_result.pix_cnt,
-					awb_result.sum_r, awb_result.sum_g, awb_result.sum_b,
-					hist_r_cnt, hist_g_cnt, hist_b_cnt);
-	}
-	if (status & ISP_REG_INT_STATUS_BIT_FRAME_DONE) {
-		dev_info(dev, "IRQ FRAME_DONE");
-	}
-#endif
 
 	isp->int_status |= status;
 	done_mask  = ISP_REG_INT_STATUS_BIT_FRAME_START | ISP_REG_INT_STATUS_BIT_FRAME_DONE;
@@ -1233,7 +758,7 @@ static int isp_s_stream(struct v4l2_subdev *sd, int enable)
 	} else {
 		isp_stop_stream(isp);
 	}
-
+	dev_info(isp->dev, "ISP %s streaming ret: %d", enable ? "start" : "stop", ret);
 stream_done:
 	mutex_unlock(&isp->lock);
 	return ret;
@@ -1297,6 +822,8 @@ static int isp_get_format(struct v4l2_subdev *sd,
 
 	fmt->format = *get_fmt;
 
+	dev_info(isp->dev, "Get format for pad %u: code=%x, width=%u, height=%u",
+		fmt->pad, fmt->format.code, fmt->format.width, fmt->format.height);
 unlock_get_format:
 	mutex_unlock(&isp->lock);
 
@@ -1331,7 +858,11 @@ static int isp_set_format(struct v4l2_subdev *sd,
 	    (isp->bits == 12 && fmt->format.code == MEDIA_BUS_FMT_Y12_1X12)) {
 		__format->code = fmt->format.code;
 	}
+	__format->width  = fmt->format.width;
+	__format->height = fmt->format.height;
 	fmt->format = *__format;
+	dev_info(isp->dev, "Set format for pad %u: code=%x, width=%u, height=%u",
+		fmt->pad, fmt->format.code, fmt->format.width, fmt->format.height);
 
 unlock_set_format:
 	mutex_unlock(&isp->lock);
@@ -1435,10 +966,10 @@ static int isp_get_hw_format(struct isp_state *isp)
 	const u32 raw10_codes[] = {MEDIA_BUS_FMT_SRGGB10_1X10, MEDIA_BUS_FMT_SGRBG10_1X10, MEDIA_BUS_FMT_SGBRG10_1X10, MEDIA_BUS_FMT_SBGGR10_1X10};
 	const u32 raw12_codes[] = {MEDIA_BUS_FMT_SRGGB12_1X12, MEDIA_BUS_FMT_SGRBG12_1X12, MEDIA_BUS_FMT_SGBRG12_1X12, MEDIA_BUS_FMT_SBGGR12_1X12};
 
-	u32 width  = isp_read(isp, ISP_REG_WIDTH);
-	u32 height = isp_read(isp, ISP_REG_HEIGHT);
-	u32 bits   = isp_read(isp, ISP_REG_BITS);
-	u32 bayer  = isp_read(isp, ISP_REG_BAYER);
+	u32 width  = INFINITE_ISP_READ_REG(isp->isp_base, config, SNS_WIDTH);
+	u32 height = INFINITE_ISP_READ_REG(isp->isp_base, config, SNS_HEIGHT);
+	u32 bits   = INFINITE_ISP_READ_REG(isp->isp_base, config, BITS);
+	u32 bayer  = INFINITE_ISP_READ_REG(isp->isp_base, config, BAYER);
 	if (width < 1 || height < 1 || (bits != 8 && bits != 10 && bits != 12) || bayer >= 4) {
 		dev_err(dev, "Invalid HW formats. Resolution %u x %u, RAW%u, Bayer %u",
 			width, height, bits, bayer);
@@ -1556,123 +1087,382 @@ static const unsigned char colorCurveTbl_10[9][2] = {
 		{27,  1},
 		{30,  0}
 	};
+static void isp_init_bnr(struct REG_Infinite_ISP* infinite_isp_reg)
+{
+	infinite_isp_reg->bnr.bnr_space_kernel_r00 = bnr_sk_r[0];
+	infinite_isp_reg->bnr.bnr_space_kernel_r01 = bnr_sk_r[1];
+	infinite_isp_reg->bnr.bnr_space_kernel_r02 = bnr_sk_r[2];
+	infinite_isp_reg->bnr.bnr_space_kernel_r03 = bnr_sk_r[3];
+	infinite_isp_reg->bnr.bnr_space_kernel_r04 = bnr_sk_r[4];
+	infinite_isp_reg->bnr.bnr_space_kernel_r10 = bnr_sk_r[5];
+	infinite_isp_reg->bnr.bnr_space_kernel_r11 = bnr_sk_r[6];
+	infinite_isp_reg->bnr.bnr_space_kernel_r12 = bnr_sk_r[7];
+	infinite_isp_reg->bnr.bnr_space_kernel_r13 = bnr_sk_r[8];
+	infinite_isp_reg->bnr.bnr_space_kernel_r14 = bnr_sk_r[9];
+	infinite_isp_reg->bnr.bnr_space_kernel_r20 = bnr_sk_r[10];
+	infinite_isp_reg->bnr.bnr_space_kernel_r21 = bnr_sk_r[11];
+	infinite_isp_reg->bnr.bnr_space_kernel_r22 = bnr_sk_r[12];
+	infinite_isp_reg->bnr.bnr_space_kernel_r23 = bnr_sk_r[13];
+	infinite_isp_reg->bnr.bnr_space_kernel_r24 = bnr_sk_r[14];
+	infinite_isp_reg->bnr.bnr_space_kernel_r30 = bnr_sk_r[15];
+	infinite_isp_reg->bnr.bnr_space_kernel_r31 = bnr_sk_r[16];
+	infinite_isp_reg->bnr.bnr_space_kernel_r32 = bnr_sk_r[17];
+	infinite_isp_reg->bnr.bnr_space_kernel_r33 = bnr_sk_r[18];
+	infinite_isp_reg->bnr.bnr_space_kernel_r34 = bnr_sk_r[19];
+	infinite_isp_reg->bnr.bnr_space_kernel_r40 = bnr_sk_r[20];
+	infinite_isp_reg->bnr.bnr_space_kernel_r41 = bnr_sk_r[21];
+	infinite_isp_reg->bnr.bnr_space_kernel_r42 = bnr_sk_r[22];
+	infinite_isp_reg->bnr.bnr_space_kernel_r43 = bnr_sk_r[23];
+	infinite_isp_reg->bnr.bnr_space_kernel_r44 = bnr_sk_r[24];
+
+	infinite_isp_reg->bnr.bnr_space_kernel_g00 = bnr_sk_g[0];
+	infinite_isp_reg->bnr.bnr_space_kernel_g01 = bnr_sk_g[1];
+	infinite_isp_reg->bnr.bnr_space_kernel_g02 = bnr_sk_g[2];
+	infinite_isp_reg->bnr.bnr_space_kernel_g03 = bnr_sk_g[3];
+	infinite_isp_reg->bnr.bnr_space_kernel_g04 = bnr_sk_g[4];
+	infinite_isp_reg->bnr.bnr_space_kernel_g10 = bnr_sk_g[5];
+	infinite_isp_reg->bnr.bnr_space_kernel_g11 = bnr_sk_g[6];
+	infinite_isp_reg->bnr.bnr_space_kernel_g12 = bnr_sk_g[7];
+	infinite_isp_reg->bnr.bnr_space_kernel_g13 = bnr_sk_g[8];
+	infinite_isp_reg->bnr.bnr_space_kernel_g14 = bnr_sk_g[9];
+	infinite_isp_reg->bnr.bnr_space_kernel_g20 = bnr_sk_g[10];
+	infinite_isp_reg->bnr.bnr_space_kernel_g21 = bnr_sk_g[11];
+	infinite_isp_reg->bnr.bnr_space_kernel_g22 = bnr_sk_g[12];
+	infinite_isp_reg->bnr.bnr_space_kernel_g23 = bnr_sk_g[13];
+	infinite_isp_reg->bnr.bnr_space_kernel_g24 = bnr_sk_g[14];
+	infinite_isp_reg->bnr.bnr_space_kernel_g30 = bnr_sk_g[15];
+	infinite_isp_reg->bnr.bnr_space_kernel_g31 = bnr_sk_g[16];
+	infinite_isp_reg->bnr.bnr_space_kernel_g32 = bnr_sk_g[17];
+	infinite_isp_reg->bnr.bnr_space_kernel_g33 = bnr_sk_g[18];
+	infinite_isp_reg->bnr.bnr_space_kernel_g34 = bnr_sk_g[19];
+	infinite_isp_reg->bnr.bnr_space_kernel_g40 = bnr_sk_g[20];
+	infinite_isp_reg->bnr.bnr_space_kernel_g41 = bnr_sk_g[21];
+	infinite_isp_reg->bnr.bnr_space_kernel_g42 = bnr_sk_g[22];
+	infinite_isp_reg->bnr.bnr_space_kernel_g43 = bnr_sk_g[23];
+	infinite_isp_reg->bnr.bnr_space_kernel_g44 = bnr_sk_g[24];
+
+	infinite_isp_reg->bnr.bnr_space_kernel_b00 = bnr_sk_b[0];
+	infinite_isp_reg->bnr.bnr_space_kernel_b01 = bnr_sk_b[1];
+	infinite_isp_reg->bnr.bnr_space_kernel_b02 = bnr_sk_b[2];
+	infinite_isp_reg->bnr.bnr_space_kernel_b03 = bnr_sk_b[3];
+	infinite_isp_reg->bnr.bnr_space_kernel_b04 = bnr_sk_b[4];
+	infinite_isp_reg->bnr.bnr_space_kernel_b10 = bnr_sk_b[5];
+	infinite_isp_reg->bnr.bnr_space_kernel_b11 = bnr_sk_b[6];
+	infinite_isp_reg->bnr.bnr_space_kernel_b12 = bnr_sk_b[7];
+	infinite_isp_reg->bnr.bnr_space_kernel_b13 = bnr_sk_b[8];
+	infinite_isp_reg->bnr.bnr_space_kernel_b14 = bnr_sk_b[9];
+	infinite_isp_reg->bnr.bnr_space_kernel_b20 = bnr_sk_b[10];
+	infinite_isp_reg->bnr.bnr_space_kernel_b21 = bnr_sk_b[11];
+	infinite_isp_reg->bnr.bnr_space_kernel_b22 = bnr_sk_b[12];
+	infinite_isp_reg->bnr.bnr_space_kernel_b23 = bnr_sk_b[13];
+	infinite_isp_reg->bnr.bnr_space_kernel_b24 = bnr_sk_b[14];
+	infinite_isp_reg->bnr.bnr_space_kernel_b30 = bnr_sk_b[15];
+	infinite_isp_reg->bnr.bnr_space_kernel_b31 = bnr_sk_b[16];
+	infinite_isp_reg->bnr.bnr_space_kernel_b32 = bnr_sk_b[17];
+	infinite_isp_reg->bnr.bnr_space_kernel_b33 = bnr_sk_b[18];
+	infinite_isp_reg->bnr.bnr_space_kernel_b34 = bnr_sk_b[19];
+	infinite_isp_reg->bnr.bnr_space_kernel_b40 = bnr_sk_b[20];
+	infinite_isp_reg->bnr.bnr_space_kernel_b41 = bnr_sk_b[21];
+	infinite_isp_reg->bnr.bnr_space_kernel_b42 = bnr_sk_b[22];
+	infinite_isp_reg->bnr.bnr_space_kernel_b43 = bnr_sk_b[23];
+	infinite_isp_reg->bnr.bnr_space_kernel_b44 = bnr_sk_b[24];
+
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_0 = bnr_cc_xr[0];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_1 = bnr_cc_xr[1];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_2 = bnr_cc_xr[2];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_3 = bnr_cc_xr[3];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_4 = bnr_cc_xr[4];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_5 = bnr_cc_xr[5];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_6 = bnr_cc_xr[6];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_7 = bnr_cc_xr[7];
+	infinite_isp_reg->bnr.bnr_color_curve_x_r_8 = bnr_cc_xr[8];
+
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_0 = bnr_cc_yr[0];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_1 = bnr_cc_yr[1];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_2 = bnr_cc_yr[2];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_3 = bnr_cc_yr[3];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_4 = bnr_cc_yr[4];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_5 = bnr_cc_yr[5];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_6 = bnr_cc_yr[6];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_7 = bnr_cc_yr[7];
+	infinite_isp_reg->bnr.bnr_color_curve_y_r_8 = bnr_cc_yr[8];
+
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_0 = bnr_cc_xg[0];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_1 = bnr_cc_xg[1];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_2 = bnr_cc_xg[2];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_3 = bnr_cc_xg[3];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_4 = bnr_cc_xg[4];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_5 = bnr_cc_xg[5];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_6 = bnr_cc_xg[6];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_7 = bnr_cc_xg[7];
+	infinite_isp_reg->bnr.bnr_color_curve_x_g_8 = bnr_cc_xg[8];
+
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_0 = bnr_cc_yg[0];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_1 = bnr_cc_yg[1];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_2 = bnr_cc_yg[2];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_3 = bnr_cc_yg[3];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_4 = bnr_cc_yg[4];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_5 = bnr_cc_yg[5];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_6 = bnr_cc_yg[6];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_7 = bnr_cc_yg[7];
+	infinite_isp_reg->bnr.bnr_color_curve_y_g_8 = bnr_cc_yg[8];
+
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_0 = bnr_cc_xb[0];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_1 = bnr_cc_xb[1];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_2 = bnr_cc_xb[2];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_3 = bnr_cc_xb[3];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_4 = bnr_cc_xb[4];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_5 = bnr_cc_xb[5];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_6 = bnr_cc_xb[6];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_7 = bnr_cc_xb[7];
+	infinite_isp_reg->bnr.bnr_color_curve_x_b_8 = bnr_cc_xb[8];
+
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_0 = bnr_cc_yb[0];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_1 = bnr_cc_yb[1];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_2 = bnr_cc_yb[2];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_3 = bnr_cc_yb[3];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_4 = bnr_cc_yb[4];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_5 = bnr_cc_yb[5];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_6 = bnr_cc_yb[6];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_7 = bnr_cc_yb[7];
+	infinite_isp_reg->bnr.bnr_color_curve_y_b_8 = bnr_cc_yb[8];
+}
 
 static int isp_initialize_hw(struct isp_state *isp)
 {
-	u32 width  = isp->pad_format[ISP_PAD_SINK].width;
-	u32 height = isp->pad_format[ISP_PAD_SINK].height;
-	u32 bits   = isp->bits;
-	//struct xil_isp_lite_top top = {};
-	struct xil_isp_lite_dpc dpc = {};
-	struct xil_isp_lite_blc blc = {};
-	struct xil_isp_lite_bnr bnr = {};
-	struct xil_isp_lite_dgain dgain = {};
-	struct xil_isp_lite_demosaic demosaic = {};
-	struct xil_isp_lite_wb wb = {};
-	struct xil_isp_lite_ccm ccm = {};
-	struct xil_isp_lite_csc csc = {};
-	struct xil_isp_lite_gamma gamma = {};
-	struct xil_isp_lite_2dnr nr2d = {};
-	struct xil_isp_lite_ee ee = {};
-	struct xil_isp_lite_stat_ae_cfg ae_cfg = {};
-	struct xil_isp_lite_stat_awb_cfg awb_cfg = {};
-	unsigned i;
+	struct REG_Infinite_ISP *infinite_isp_reg;
+	struct REG_Infinite_ISP_LUT *infinite_isp_lut;
+	infinite_isp_reg = kzalloc(sizeof(*infinite_isp_reg), GFP_KERNEL);
+	if (!infinite_isp_reg)
+		return -ENOMEM;
 
-	isp_write(isp, ISP_REG_RESET, 1);
-	isp_write(isp, ISP_REG_INT_MASK, ~0U);
+	infinite_isp_lut = kzalloc(sizeof(*infinite_isp_lut), GFP_KERNEL);
+	if (!infinite_isp_lut) {
+		kfree(infinite_isp_reg);
+		return -ENOMEM;
+	}
 
-	dpc.enabled = 1;
-	blc.enabled = 1;
-	bnr.enabled = 1;
-	dgain.enabled = 1;
-	demosaic.enabled = 1;
-	wb.enabled = 1;
-	ccm.enabled = 1;
-	csc.enabled = 1;
-	gamma.enabled = 1;
-	nr2d.enabled = 1;
-	ee.enabled = 1;
-	ae_cfg.enabled = 1;
-	awb_cfg.enabled = 1;
+	unsigned i;           
 
-	dpc.threshold = 32 << (bits - 8);
+	infinite_isp_reg->config.TOP_EN.TOP_EN_DPC_EN = DPC_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_BLC_EN = BLC_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_LINEAR_EN = BLC_LINEAR_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_OECF_EN = OECF_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_DGAIN_EN = DGAIN_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_LSC_EN = 0;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_BNR_EN = BNR_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_WB_EN = WB_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_GAMMA_EN = GAMMA_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_DEMOSIC_EN = CFA_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_CCM_EN = CCM_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_CSC_EN = CSC_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_LDCI_EN = 0;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_2DNR_EN = NR2D_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_SHARP_EN = SHARP_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_AE_EN = AE_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_AWB_EN = AWB_EN;
+	infinite_isp_reg->config.TOP_EN.TOP_EN_CROP_EN = CROP_EN;
 
-	blc.black_level_r  = 10 << (bits - 8);
-	blc.black_level_gr = 10 << (bits - 8);
-	blc.black_level_gb = 10 << (bits - 8);
-	blc.black_level_b  = 10 << (bits - 8);
+	infinite_isp_reg->dpc.DPC_THRESHOLD = dp_threshold;
 
-	bnr.nr_level = 2;
+	infinite_isp_reg->blc.BLC_R  = r_offset;
+	infinite_isp_reg->blc.BLC_GB = gr_offset;
+	infinite_isp_reg->blc.BLC_GR = gb_offset;
+	infinite_isp_reg->blc.BLC_B  = b_offset;
+	infinite_isp_reg->blc.LINEAR_R = linear_r;
+	infinite_isp_reg->blc.LINEAR_GB = linear_gb;
+	infinite_isp_reg->blc.LINEAR_GR = linear_gr;
+	infinite_isp_reg->blc.LINEAR_B = linear_b;
 
-	dgain.gain = 0x10;
-	dgain.offset = 0;
+	infinite_isp_reg->dgain.dgain_isManual = DGAIN_isManual;
+	infinite_isp_reg->dgain.dgain_man_index = current_gain;
+	memcpy(&infinite_isp_reg->dgain.dgain_array_0, gain_array, sizeof(gain_array));
+
+	isp_init_bnr(infinite_isp_reg);
+
+	infinite_isp_reg->wb.WB_RGAIN = r_gain;
+	infinite_isp_reg->wb.WB_BGAIN = b_gain;
+
+	infinite_isp_reg->ccm.ccm_rr = corrected_red[0];
+	infinite_isp_reg->ccm.ccm_rg = corrected_red[1];
+	infinite_isp_reg->ccm.ccm_rb = corrected_red[2];
+
+	infinite_isp_reg->ccm.ccm_gr = corrected_green[0];
+	infinite_isp_reg->ccm.ccm_gg = corrected_green[1];
+	infinite_isp_reg->ccm.ccm_gb = corrected_green[2];
+
+	infinite_isp_reg->ccm.ccm_br = corrected_blue[0];
+	infinite_isp_reg->ccm.ccm_bg = corrected_blue[1];
+	infinite_isp_reg->ccm.ccm_bb = corrected_blue[2];
+
+	infinite_isp_reg->csc.csc_conv_std = csc_conv_standard;
 	
-	wb.ggain = 0x10;
-	wb.rgain = 0x17;
-	wb.bgain = 0x20;
+	infinite_isp_reg->sharp.sharpen_strength = sharpen_strength;
+	memcpy(&infinite_isp_reg->sharp.luma_kernel_00, luma_kernel, sizeof(luma_kernel));
 
-	ccm.matrix[0] =  0x1a;
-	ccm.matrix[1] = -0x05;
-	ccm.matrix[2] = -0x05;
-	ccm.matrix[3] = -0x05;
-	ccm.matrix[4] =  0x1a;
-	ccm.matrix[5] = -0x05;
-	ccm.matrix[6] = -0x05;
-	ccm.matrix[7] = -0x05;
-	ccm.matrix[8] =  0x1a;
+	infinite_isp_reg->_2dnr.nr2d_diff_0 = nr2d_diff[0];
+	infinite_isp_reg->_2dnr.nr2d_diff_1 = nr2d_diff[1];
+	infinite_isp_reg->_2dnr.nr2d_diff_2 = nr2d_diff[2];
+	infinite_isp_reg->_2dnr.nr2d_diff_3 = nr2d_diff[3];
+	infinite_isp_reg->_2dnr.nr2d_diff_4 = nr2d_diff[4];
+	infinite_isp_reg->_2dnr.nr2d_diff_5 = nr2d_diff[5];
+	infinite_isp_reg->_2dnr.nr2d_diff_6 = nr2d_diff[6];
+	infinite_isp_reg->_2dnr.nr2d_diff_7 = nr2d_diff[7];
+	infinite_isp_reg->_2dnr.nr2d_diff_8 = nr2d_diff[8];
+	infinite_isp_reg->_2dnr.nr2d_diff_9 = nr2d_diff[9];
+	infinite_isp_reg->_2dnr.nr2d_diff_10 = nr2d_diff[10];
+	infinite_isp_reg->_2dnr.nr2d_diff_11 = nr2d_diff[11];
+	infinite_isp_reg->_2dnr.nr2d_diff_12 = nr2d_diff[12];
+	infinite_isp_reg->_2dnr.nr2d_diff_13 = nr2d_diff[13];
+	infinite_isp_reg->_2dnr.nr2d_diff_14 = nr2d_diff[14];
+	infinite_isp_reg->_2dnr.nr2d_diff_15 = nr2d_diff[15];
+	infinite_isp_reg->_2dnr.nr2d_diff_16 = nr2d_diff[16];
+	infinite_isp_reg->_2dnr.nr2d_diff_17 = nr2d_diff[17];
+	infinite_isp_reg->_2dnr.nr2d_diff_18 = nr2d_diff[18];
+	infinite_isp_reg->_2dnr.nr2d_diff_19 = nr2d_diff[19];
+	infinite_isp_reg->_2dnr.nr2d_diff_20 = nr2d_diff[20];
+	infinite_isp_reg->_2dnr.nr2d_diff_21 = nr2d_diff[21];
+	infinite_isp_reg->_2dnr.nr2d_diff_22 = nr2d_diff[22];
+	infinite_isp_reg->_2dnr.nr2d_diff_23 = nr2d_diff[23];
+	infinite_isp_reg->_2dnr.nr2d_diff_24 = nr2d_diff[24];
+	infinite_isp_reg->_2dnr.nr2d_diff_25 = nr2d_diff[25];
+	infinite_isp_reg->_2dnr.nr2d_diff_26 = nr2d_diff[26];
+	infinite_isp_reg->_2dnr.nr2d_diff_27 = nr2d_diff[27];
+	infinite_isp_reg->_2dnr.nr2d_diff_28 = nr2d_diff[28];
+	
+	infinite_isp_reg->_2dnr.nr2d_weight_0 = nr2d_weight[0];
+	infinite_isp_reg->_2dnr.nr2d_weight_1 = nr2d_weight[1];
+	infinite_isp_reg->_2dnr.nr2d_weight_2 = nr2d_weight[2];
+	infinite_isp_reg->_2dnr.nr2d_weight_3 = nr2d_weight[3];
+	infinite_isp_reg->_2dnr.nr2d_weight_4 = nr2d_weight[4];
+	infinite_isp_reg->_2dnr.nr2d_weight_5 = nr2d_weight[5];
+	infinite_isp_reg->_2dnr.nr2d_weight_6 = nr2d_weight[6];
+	infinite_isp_reg->_2dnr.nr2d_weight_7 = nr2d_weight[7];
+	infinite_isp_reg->_2dnr.nr2d_weight_8 = nr2d_weight[8];
+	infinite_isp_reg->_2dnr.nr2d_weight_9 = nr2d_weight[9];
+	infinite_isp_reg->_2dnr.nr2d_weight_10 = nr2d_weight[10];
+	infinite_isp_reg->_2dnr.nr2d_weight_11 = nr2d_weight[11];
+	infinite_isp_reg->_2dnr.nr2d_weight_12 = nr2d_weight[12];
+	infinite_isp_reg->_2dnr.nr2d_weight_13 = nr2d_weight[13];
+	infinite_isp_reg->_2dnr.nr2d_weight_14 = nr2d_weight[14];
+	infinite_isp_reg->_2dnr.nr2d_weight_15 = nr2d_weight[15];
+	infinite_isp_reg->_2dnr.nr2d_weight_16 = nr2d_weight[16];
+	infinite_isp_reg->_2dnr.nr2d_weight_17 = nr2d_weight[17];
+	infinite_isp_reg->_2dnr.nr2d_weight_18 = nr2d_weight[18];
+	infinite_isp_reg->_2dnr.nr2d_weight_19 = nr2d_weight[19];
+	infinite_isp_reg->_2dnr.nr2d_weight_20 = nr2d_weight[20];
+	infinite_isp_reg->_2dnr.nr2d_weight_21 = nr2d_weight[21];
+	infinite_isp_reg->_2dnr.nr2d_weight_22 = nr2d_weight[22];
+	infinite_isp_reg->_2dnr.nr2d_weight_23 = nr2d_weight[23];
+	infinite_isp_reg->_2dnr.nr2d_weight_24 = nr2d_weight[24];
+	infinite_isp_reg->_2dnr.nr2d_weight_25 = nr2d_weight[25];
+	infinite_isp_reg->_2dnr.nr2d_weight_26 = nr2d_weight[26];
+	infinite_isp_reg->_2dnr.nr2d_weight_27 = nr2d_weight[27];
+	infinite_isp_reg->_2dnr.nr2d_weight_28 = nr2d_weight[28];
 
-	for (i = 0; i < ARRAY_SIZE(gamma.gamma_table); i++) {
-		gamma.gamma_table[i] = gamma_table[i];
-	}
+	infinite_isp_reg->awb.AWB_UNDEREXPOSED_LIMIT = awb_underexposed_limit;
+	infinite_isp_reg->awb.AWB_OVEREXPOSED_LIMIT = awb_overexposed_limit;
+	infinite_isp_reg->awb.AWB_FRAMES = awb_frames;
 
-	for (i = 0; i < ARRAY_SIZE(nr2d.space_weight); i++) {
-		nr2d.space_weight[i] = spaceWeightTbl_10[i];
-	}
-	for (i = 0; i < ARRAY_SIZE(nr2d.color_curve); i++) {
-		nr2d.color_curve[i][0] = colorCurveTbl_10[i][0];
-		nr2d.color_curve[i][1] = colorCurveTbl_10[i][1];
-	}
+	infinite_isp_reg->ae.center_illuminance = center_illuminance;
+	infinite_isp_reg->ae.skewness = histogram_skewnes;
+	infinite_isp_reg->ae.ae_crop_left = ae_crop_left;
+	infinite_isp_reg->ae.ae_crop_right = ae_crop_right;
+	infinite_isp_reg->ae.ae_crop_top = ae_crop_top;
+	infinite_isp_reg->ae.ae_crop_bottom = ae_crop_bottom;
 
-	ae_cfg.rect_x = width / 8;
-	ae_cfg.rect_y = height / 8;
-	ae_cfg.rect_w = width / 4 * 3;
-	ae_cfg.rect_h = height / 4 * 3;
+	memcpy(infinite_isp_lut->gamma_lut.GAMMA_LUT, gamma_lut_10, sizeof(gamma_lut_10));
 
-	awb_cfg.thresh_min = 10 << (bits - 8);
-	awb_cfg.thresh_max = 220 << (bits - 8);
+	memcpy(infinite_isp_lut->oecf_luts.OECF_R_LUT, oecf_table, sizeof(oecf_table));
+	memcpy(infinite_isp_lut->oecf_luts.OECF_GB_LUT, oecf_table, sizeof(oecf_table));
+	memcpy(infinite_isp_lut->oecf_luts.OECF_GR_LUT, oecf_table, sizeof(oecf_table));
+	memcpy(infinite_isp_lut->oecf_luts.OECF_B_LUT, oecf_table, sizeof(oecf_table));
 
-	isp_set_dpc(isp, &dpc);
-	isp_set_blc(isp, &blc);
-	isp_set_bnr(isp, &bnr);
-	isp_set_dgain(isp, &dgain);
-	isp_set_demosaic(isp, &demosaic);
-	isp_set_wb(isp, &wb);
-	isp_set_ccm(isp, &ccm);
-	isp_set_csc(isp, &csc);
-	isp_set_gamma(isp, &gamma);
-	isp_set_2dnr(isp, &nr2d);
-	isp_set_ee(isp, &ee);
-	isp_set_stat_ae_cfg(isp, &ae_cfg);
-	isp_set_stat_awb_cfg(isp, &awb_cfg);
+	memcpy(infinite_isp_lut->vip1_osd_ram.VIP1_OSD_RAM, osd_bitmap_128x32, sizeof(osd_bitmap_128x32));
+	
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);   
 
-	// isp_get_top(isp, &top);
-	// dev_info(isp->dev, "top_en 0x%04X", *(u32*)&top);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, TOP_EN, infinite_isp_reg->config.TOP_EN.TOP_EN_val);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, dpc, &infinite_isp_reg->dpc);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, blc, &infinite_isp_reg->blc);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, dgain, &infinite_isp_reg->dgain);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, bnr, &infinite_isp_reg->bnr);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, wb, &infinite_isp_reg->wb);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, ccm, &infinite_isp_reg->ccm);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, csc, &infinite_isp_reg->csc);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, sharp, &infinite_isp_reg->sharp);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, _2dnr, &infinite_isp_reg->_2dnr);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, awb, &infinite_isp_reg->awb);
+	INFINITE_ISP_WRITE_MODULE_REGs(isp->isp_base, ae, &infinite_isp_reg->ae);
 
-	// isp_get_gamma(isp, &gamma);
-	// for (i = 0; i < ARRAY_SIZE(gamma.gamma_table); i++) {
-	// 	dev_info(isp->dev, "gamma[%u]:\t%u", i, gamma.gamma_table[i]);
-	// }
+	INFINITE_ISP_WRITE_LUT_REGs(isp->luts_base, gamma_lut, &infinite_isp_lut->gamma_lut);
+	INFINITE_ISP_WRITE_LUT_REGs(isp->luts_base, oecf_luts, &infinite_isp_lut->oecf_luts);
+	INFINITE_ISP_WRITE_LUT_REGs(isp->luts_base, vip1_osd_ram, &infinite_isp_lut->vip1_osd_ram);
 
-	// isp_get_ccm(isp, &ccm);
-	// for (i = 0; i < ARRAY_SIZE(ccm.matrix); i++) {
-	// 	dev_info(isp->dev, "matrix[%u]:\t%02X, %d", i, (u8)ccm.matrix[i], ccm.matrix[i]);
-	// }
+	kfree(infinite_isp_lut);
+	kfree(infinite_isp_reg);
 	return 0;
 }
 
 static const struct clk_bulk_data isp_clks[] = {
 	{ .id = "s00_axi_aclk" },
 	{ .id = "pclk" },
+};
+
+static ssize_t offset_write(struct file *file, const char __user *user_buf,
+                          size_t count, loff_t *ppos)
+{
+    struct isp_state *isp = file->private_data;
+    char buf[16];
+    unsigned long offset;
+    int ret;
+
+    if (count >= sizeof(buf))
+        return -EINVAL;
+
+    if (copy_from_user(buf, user_buf, count))
+        return -EFAULT;
+
+    buf[count] = '\0';
+
+    ret = kstrtoul(buf, 0, &offset);
+    if (ret)
+        return ret;
+
+    if (offset > 0xffff)
+        return -EINVAL;
+
+    isp->debug_reg_offset = offset;
+	pr_info("set debug_reg_offset: 0x%x", offset);
+    return count;
+}
+
+static ssize_t offset_read(struct file *file, char __user *user_buf,
+                         size_t count, loff_t *ppos)
+{
+    struct isp_state *isp = file->private_data;
+    char buf[30];
+    int len;
+
+    if (*ppos > 0)
+        return 0;
+
+    len = snprintf(buf, sizeof(buf), "0x%08x : 0x%08x\n", isp->debug_reg_offset, ioread32(isp->isp_base + isp->debug_reg_offset));
+    
+    if (copy_to_user(user_buf, buf, len))
+        return -EFAULT;
+
+    *ppos = len;
+    return len;
+}
+
+static const struct file_operations offset_fops = {
+    .open = simple_open,
+    .read = offset_read,
+    .write = offset_write,
+    .llseek = default_llseek,
 };
 
 static int isp_probe(struct platform_device *pdev)
@@ -1697,11 +1487,19 @@ static int isp_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	isp->iomem = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(isp->iomem)) {
-		dev_err(dev, "No iomem resource in DT");
-		return PTR_ERR(isp->iomem);
-	}
+    isp->isp_base = devm_platform_ioremap_resource_byname(pdev, "isp");
+    if (IS_ERR(isp->isp_base)) {
+        ret = PTR_ERR(isp->isp_base);
+        dev_err(&pdev->dev, "Failed to map isp registers: %d\n", ret);
+        return ret;
+    }
+
+    isp->luts_base = devm_platform_ioremap_resource_byname(pdev, "luts");
+    if (IS_ERR(isp->luts_base)) {
+        ret = PTR_ERR(isp->luts_base);
+        dev_err(&pdev->dev, "Failed to map luts registers: %d\n", ret);
+        return ret;
+    }
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
@@ -1782,6 +1580,12 @@ static int isp_probe(struct platform_device *pdev)
 		goto error;
 	}
 
+
+    isp->debug_dir = debugfs_create_dir("xil_isp", NULL);
+    if (!isp->debug_dir) {
+        dev_err(&pdev->dev, "Failed to create debugfs directory\n");
+    }
+	debugfs_create_file("reg_offset", 0644, isp->debug_dir, isp, &offset_fops);
 	dev_info(dev, ISP_DRIVER_NAME " driver probed!");
 
 	return 0;
