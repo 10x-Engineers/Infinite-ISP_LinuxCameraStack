@@ -227,6 +227,25 @@ static const struct imx219_reg mode_3280x2464_regs[] = {
 	{0x0627, 0xa0},
 };
 
+static const struct imx219_reg mode_1992x1152_regs[] = {
+	{0x0164, 0x02},
+	{0x0165, 0x80},
+	{0x0166, 0x0a},
+	{0x0167, 0x4f},
+	{0x0168, 0x02},
+	{0x0169, 0x80},
+	{0x016a, 0x07},
+	{0x016b, 0x1f},
+	{0x016c, 0x07},
+	{0x016d, 0xc8},
+	{0x016e, 0x04},
+	{0x016f, 0x80},
+	{0x0624, 0x07},
+	{0x0625, 0xc8},
+	{0x0626, 0x04},
+	{0x0627, 0x80},
+};
+
 static const struct imx219_reg mode_1920_1080_regs[] = {
 	{0x0164, 0x02},
 	{0x0165, 0xa8},
@@ -380,6 +399,23 @@ static const struct imx219_mode supported_modes[] = {
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_3280x2464_regs),
 			.regs = mode_3280x2464_regs,
+		},
+		.binning = false,
+	},
+	{
+		/* 1992*1152 15fps mode */
+		.width = 1992,
+		.height = 1152,
+		.crop = {
+			.left = 640,
+			.top = 640,
+			.width = 1992,
+			.height = 1152
+		},
+		.vts_def = IMX219_VTS_15FPS,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mode_1992x1152_regs),
+			.regs = mode_1992x1152_regs,
 		},
 		.binning = false,
 	},
