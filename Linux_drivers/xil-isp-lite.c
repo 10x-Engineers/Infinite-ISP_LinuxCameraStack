@@ -24,6 +24,7 @@
 #include <linux/isp_init.h>
 #include "infinite_isp_register.h"
 #include <linux/debugfs.h>
+#include "xil-isp-irq.h"
 
 #define ISP_REG_INT_STATUS_BIT_FRAME_START  (1<<0)
 #define ISP_REG_INT_STATUS_BIT_FRAME_DONE   (1<<1)
@@ -60,6 +61,8 @@ struct isp_stat_node {
 	struct media_pad pad;
 	spinlock_t lock; /* locks the buffers list 'stat' */
 	struct list_head buf_list;
+	bool streaming;
+	u32 dropped_frames;
 };
 
 struct isp_state {
@@ -85,7 +88,8 @@ struct isp_state {
 	u8 is_lut;
     spinlock_t reg_lock;
 
-	int irq;
+	bool irq_source_enabled;
+	bool irq_dispatcher_owner;
 };
 
 #define DEFINE_ISP_GET_FUNC(module, reg_name) \
@@ -140,9 +144,33 @@ static int isp_config_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
     struct isp_state *isp = container_of(ctrl->handler, 
                                       struct isp_state, 
                                       config_ctrls);
+	union REG_ISP_TOP_EN top_en;
     int ret = 0;
 
     switch (ctrl->id) {
+	case V4L2_CID_AUTO_WHITE_BALANCE:
+		top_en.TOP_EN_val = INFINITE_ISP_READ_REG(isp->isp_base, config,
+						       TOP_EN);
+		ctrl->val = top_en.TOP_EN_AWB_EN;
+		break;
+	case V4L2_CID_AUTOGAIN:
+		ctrl->val = !INFINITE_ISP_READ_REG(isp->isp_base, dgain,
+						     dgain_isManual);
+		break;
+	case V4L2_CID_RED_BALANCE:
+		ctrl->val = INFINITE_ISP_READ_REG(isp->isp_base, wb, WB_RGAIN);
+		break;
+	case V4L2_CID_BLUE_BALANCE:
+		ctrl->val = INFINITE_ISP_READ_REG(isp->isp_base, wb, WB_BGAIN);
+		break;
+	case V4L2_CID_DIGITAL_GAIN:
+		ctrl->val = INFINITE_ISP_READ_REG(isp->isp_base, dgain,
+						     dgain_index_out);
+		break;
+	case V4L2_CID_USER_XIL_ISP_LITE_ALL:
+		memcpy_fromio(ctrl->p_new.p_u8, isp->isp_base,
+			      sizeof(struct REG_Infinite_ISP));
+		break;
     case V4L2_CID_USER_XIL_ISP_LITE_CONFIG:
         ret = isp_get_config(isp, (struct REG_CONFIG *)ctrl->p_new.p_u8);
         break;
@@ -201,9 +229,32 @@ static int isp_config_s_ctrl(struct v4l2_ctrl *ctrl)
     struct isp_state *isp = container_of(ctrl->handler, 
                                       struct isp_state, 
                                       config_ctrls);
+	union REG_ISP_TOP_EN top_en;
     int ret = 0;
 
     switch (ctrl->id) {
+	case V4L2_CID_AUTO_WHITE_BALANCE:
+		top_en.TOP_EN_val = INFINITE_ISP_READ_REG(isp->isp_base, config,
+						       TOP_EN);
+		top_en.TOP_EN_AWB_EN = !!ctrl->val;
+		INFINITE_ISP_WRITE_REG(isp->isp_base, config, TOP_EN,
+				       top_en.TOP_EN_val);
+		break;
+	case V4L2_CID_AUTOGAIN:
+		INFINITE_ISP_WRITE_REG(isp->isp_base, dgain, dgain_isManual,
+				       !ctrl->val);
+		break;
+	case V4L2_CID_RED_BALANCE:
+		INFINITE_ISP_WRITE_REG(isp->isp_base, wb, WB_RGAIN, ctrl->val);
+		break;
+	case V4L2_CID_BLUE_BALANCE:
+		INFINITE_ISP_WRITE_REG(isp->isp_base, wb, WB_BGAIN, ctrl->val);
+		break;
+	case V4L2_CID_DIGITAL_GAIN:
+		INFINITE_ISP_WRITE_REG(isp->isp_base, dgain, dgain_isManual, 1);
+		INFINITE_ISP_WRITE_REG(isp->isp_base, dgain, dgain_man_index,
+				       ctrl->val);
+		break;
     case V4L2_CID_USER_XIL_ISP_LITE_CONFIG:
         ret = isp_set_config(isp, (const struct REG_CONFIG *)ctrl->p_new.p_u8);
         break;
@@ -275,7 +326,7 @@ static const struct isp_config_custom_ctrl custom_ctrls[] = {
 		.name	= "ISP Full Register Control",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_ALL,
 		.size	= sizeof(struct REG_Infinite_ISP),
-		.flags	= 0
+		.flags	= V4L2_CTRL_FLAG_READ_ONLY
 	}, {
 		.name	= "ISP Configuration Control",
 		.id	= V4L2_CID_USER_XIL_ISP_LITE_CONFIG,
@@ -357,6 +408,7 @@ static const struct isp_config_custom_ctrl custom_ctrls[] = {
 static int isp_config_init_ctrl_handler(struct isp_state *isp)
 {
 	struct v4l2_ctrl_handler *ctrl_handler = &isp->config_ctrls;
+	struct v4l2_ctrl *ctrl;
 	int ret;
 	unsigned int i;
 
@@ -370,8 +422,9 @@ static int isp_config_init_ctrl_handler(struct isp_state *isp)
 		.step		= 1,
 	};
 
-	/* 3 standard controls, and an array of custom controls */
-	ret = v4l2_ctrl_handler_init(ctrl_handler, ARRAY_SIZE(custom_ctrls));
+	/* Standard tuning controls plus the legacy register-block controls. */
+	ret = v4l2_ctrl_handler_init(ctrl_handler,
+				     ARRAY_SIZE(custom_ctrls) + 5);
 	if (ret) {
 		dev_err(isp->dev, "ctrl_handler init failed (%d)", ret);
 		return ret;
@@ -381,9 +434,29 @@ static int isp_config_init_ctrl_handler(struct isp_state *isp)
 		ctrl_template.name = custom_ctrls[i].name;
 		ctrl_template.id = custom_ctrls[i].id;
 		ctrl_template.dims[0] = custom_ctrls[i].size;
-		ctrl_template.flags = custom_ctrls[i].flags;
+		ctrl_template.flags = custom_ctrls[i].flags |
+			V4L2_CTRL_FLAG_VOLATILE;
+		if (!(custom_ctrls[i].flags & V4L2_CTRL_FLAG_READ_ONLY))
+			ctrl_template.flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
 		v4l2_ctrl_new_custom(ctrl_handler, &ctrl_template, NULL);
 	}
+
+#define ISP_NEW_STD_CTRL(_id, _min, _max, _step, _def) do { \
+	ctrl = v4l2_ctrl_new_std(ctrl_handler, &isp_config_ctrl_ops, (_id), \
+				 (_min), (_max), (_step), (_def)); \
+	if (ctrl) \
+		ctrl->flags |= V4L2_CTRL_FLAG_VOLATILE | \
+			       V4L2_CTRL_FLAG_EXECUTE_ON_WRITE; \
+} while (0)
+
+	ISP_NEW_STD_CTRL(V4L2_CID_AUTO_WHITE_BALANCE, 0, 1, 1, !!AWB_EN);
+	ISP_NEW_STD_CTRL(V4L2_CID_AUTOGAIN, 0, 1, 1, !DGAIN_isManual);
+	ISP_NEW_STD_CTRL(V4L2_CID_RED_BALANCE, 0, 4095, 1, r_gain);
+	ISP_NEW_STD_CTRL(V4L2_CID_BLUE_BALANCE, 0, 4095, 1, b_gain);
+	/* The hardware exposes a 100-entry digital-gain LUT by index. */
+	ISP_NEW_STD_CTRL(V4L2_CID_DIGITAL_GAIN, 0, 99, 1, current_gain);
+
+#undef ISP_NEW_STD_CTRL
 
 	if (ctrl_handler->error) {
 		ret = ctrl_handler->error;
@@ -511,27 +584,82 @@ static int isp_stat_vb2_buf_prepare(struct vb2_buffer *vb)
 	return 0;
 }
 
+static int isp_stat_vb2_start_streaming(struct vb2_queue *vq,
+					unsigned int count)
+{
+	struct isp_stat_node *node = vq->drv_priv;
+	struct isp_state *isp = container_of(node, struct isp_state, stat_node);
+	unsigned long flags;
+
+	/* Keep the interrupt source quiet while resetting the frame state. */
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+
+	spin_lock_irqsave(&node->lock, flags);
+	node->streaming = true;
+	node->dropped_frames = 0;
+	isp->frame_sequence = 0;
+	isp->int_status = 0;
+	spin_unlock_irqrestore(&node->lock, flags);
+	if (xil_isp_irq_enable(XIL_ISP_IRQ_SOURCE_ISP)) {
+		spin_lock_irqsave(&node->lock, flags);
+		node->streaming = false;
+		spin_unlock_irqrestore(&node->lock, flags);
+		return -ENODEV;
+	}
+	isp->irq_source_enabled = true;
+
+	/* Mask bits are active-high. AWB_DONE is not connected in this RTL. */
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK,
+		~(ISP_REG_INT_MASK_BIT_FRAME_START |
+		  ISP_REG_INT_MASK_BIT_FRAME_DONE  |
+		  ISP_REG_INT_MASK_BIT_AE_DONE));
+
+	dev_info(isp->dev, "ISP statistics streaming started (%u buffers)",
+		 count);
+	return 0;
+}
+
 static void isp_stat_vb2_stop_streaming(struct vb2_queue *vq)
 {
 	struct isp_stat_node *node = vq->drv_priv;
+	struct isp_state *isp = container_of(node, struct isp_state, stat_node);
 	struct isp_stat_buffer *buffer;
-	unsigned int i;
+	unsigned long flags;
 
-	spin_lock_irq(&node->lock);
-	for (i = 0; i < ISP_STAT_REQ_BUFS_MAX; i++) {
-		if (list_empty(&node->buf_list))
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
+
+	spin_lock_irqsave(&node->lock, flags);
+	node->streaming = false;
+	spin_unlock_irqrestore(&node->lock, flags);
+
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+	if (isp->irq_source_enabled) {
+		xil_isp_irq_disable(XIL_ISP_IRQ_SOURCE_ISP);
+		isp->irq_source_enabled = false;
+	}
+	isp->int_status = 0;
+
+	for (;;) {
+		spin_lock_irqsave(&node->lock, flags);
+		if (list_empty(&node->buf_list)) {
+			spin_unlock_irqrestore(&node->lock, flags);
 			break;
+		}
 		buffer = list_first_entry(&node->buf_list, struct isp_stat_buffer, list_node);
 		list_del(&buffer->list_node);
+		spin_unlock_irqrestore(&node->lock, flags);
 		vb2_buffer_done(&buffer->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 	}
-	spin_unlock_irq(&node->lock);
+
+	dev_info(isp->dev, "ISP statistics streaming stopped");
 }
 
 static const struct vb2_ops isp_stat_vb2_ops = {
 	.queue_setup = isp_stat_vb2_queue_setup,
 	.buf_queue = isp_stat_vb2_buf_queue,
 	.buf_prepare = isp_stat_vb2_buf_prepare,
+	.start_streaming = isp_stat_vb2_start_streaming,
 	.wait_prepare = vb2_ops_wait_prepare,
 	.wait_finish = vb2_ops_wait_finish,
 	.stop_streaming = isp_stat_vb2_stop_streaming,
@@ -552,65 +680,81 @@ static int isp_stat_init_vb2_queue(struct isp_stat_node *node)
 	return vb2_queue_init(q);
 }
 
-static void isp_get_stat_ae_result(struct isp_state *isp,
-				    struct xil_isp_lite_stat_ae_result *result)
-{
-	result->ae_response = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_response);
-	result->ae_skewness = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_result_skewness);
-	result->ae_done     = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_done);
-}
-
-static void isp_get_stat_awb_result(struct isp_state *isp,
-				     struct xil_isp_lite_stat_awb_result *result)
-{
-	result->final_r_gain = INFINITE_ISP_READ_REG(isp->isp_base, awb, FINAL_RGAIN);
-	result->final_b_gain = INFINITE_ISP_READ_REG(isp->isp_base, awb, FINAL_BGAIN);
-}
-
-static void isp_stat_send_measurement(struct isp_stat_node *node)
+static void isp_stat_send_measurement(struct isp_stat_node *node, u32 irq_status)
 {
 	struct isp_state *isp = container_of(node, struct isp_state, stat_node);
 	struct isp_stat_buffer *buffer = NULL;
 	unsigned int frame_sequence = isp->frame_sequence;
+	u32 dropped_frames;
 	u64 timestamp = ktime_get_ns();
+	unsigned long flags;
+	struct xil_isp_lite_stat_result *stat_result;
+	union REG_ISP_TOP_EN top_en;
 
-	spin_lock(&node->lock);
+	spin_lock_irqsave(&node->lock, flags);
+	if (!node->streaming) {
+		spin_unlock_irqrestore(&node->lock, flags);
+		return;
+	}
 
 	/* get one empty buffer */
 	if (!list_empty(&node->buf_list)) {
 		buffer = list_first_entry(&node->buf_list, struct isp_stat_buffer, list_node);
 		list_del(&buffer->list_node);
+	} else {
+		node->dropped_frames++;
+	}
+	dropped_frames = node->dropped_frames;
+	spin_unlock_irqrestore(&node->lock, flags);
+
+	if (!buffer)
+		return;
+
+	stat_result = vb2_plane_vaddr(&buffer->vb.vb2_buf, 0);
+	if (!stat_result) {
+		vb2_buffer_done(&buffer->vb.vb2_buf, VB2_BUF_STATE_ERROR);
+		return;
 	}
 
-	if (buffer) {
-		struct xil_isp_lite_stat_result *stat_result = NULL;
-		stat_result = (struct xil_isp_lite_stat_result *)vb2_plane_vaddr(&buffer->vb.vb2_buf, 0);
+	memset(stat_result, 0, sizeof(*stat_result));
+	stat_result->abi_version = XIL_ISP_LITE_STAT_ABI_VERSION;
+	stat_result->record_size = sizeof(*stat_result);
+	stat_result->frame_sequence = frame_sequence;
+	stat_result->irq_status = irq_status;
+	stat_result->timestamp_ns = timestamp;
+	stat_result->ae_response = INFINITE_ISP_READ_REG(isp->isp_base, ae,
+							 ae_response);
+	stat_result->ae_skewness = INFINITE_ISP_READ_REG(isp->isp_base, ae,
+							 ae_result_skewness);
+	stat_result->ae_done = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_done);
+	stat_result->awb_r_gain = INFINITE_ISP_READ_REG(isp->isp_base, awb,
+							FINAL_RGAIN);
+	stat_result->awb_b_gain = INFINITE_ISP_READ_REG(isp->isp_base, awb,
+							FINAL_BGAIN);
+	stat_result->dgain_index = INFINITE_ISP_READ_REG(isp->isp_base, dgain,
+							 dgain_index_out);
+	stat_result->wb_r_gain = INFINITE_ISP_READ_REG(isp->isp_base, wb, WB_RGAIN);
+	stat_result->wb_b_gain = INFINITE_ISP_READ_REG(isp->isp_base, wb, WB_BGAIN);
+	stat_result->dropped_frames = dropped_frames;
+	top_en.TOP_EN_val = INFINITE_ISP_READ_REG(isp->isp_base, config, TOP_EN);
+	stat_result->flags = 0;
+	if (top_en.TOP_EN_AE_EN)
+		stat_result->flags |= XIL_ISP_LITE_STAT_FLAG_AE_VALID;
+	if (top_en.TOP_EN_AWB_EN &&
+	    (stat_result->awb_r_gain || stat_result->awb_b_gain))
+		stat_result->flags |= XIL_ISP_LITE_STAT_FLAG_AWB_VALID;
+	if (top_en.TOP_EN_DGAIN_EN)
+		stat_result->flags |= XIL_ISP_LITE_STAT_FLAG_DGAIN_VALID;
 
-		memset(stat_result, 0, sizeof(*stat_result));
-
-		isp_get_stat_ae_result(isp, &stat_result->ae);
-		isp_get_stat_awb_result(isp, &stat_result->awb);
-
-		stat_result->ae.timestamp_ns = timestamp;
-		stat_result->ae.frame_sequence = frame_sequence;
-		stat_result->awb.timestamp_ns = timestamp;
-		stat_result->awb.frame_sequence = frame_sequence;
-
-		vb2_set_plane_payload(&buffer->vb.vb2_buf, 0, sizeof(struct xil_isp_lite_stat_result));
-		buffer->vb.sequence = frame_sequence;
-		buffer->vb.vb2_buf.timestamp = timestamp;
-		vb2_buffer_done(&buffer->vb.vb2_buf, VB2_BUF_STATE_DONE);
-		dev_info_ratelimited(isp->dev,
-			"ISP stat sent: frame=%u ae_resp=%u ae_skew=%u ae_done=%u r_gain=%u b_gain=%u",
-			frame_sequence,
-			stat_result->ae.ae_response,
-			stat_result->ae.ae_skewness,
-			stat_result->ae.ae_done,
-			stat_result->awb.final_r_gain,
-			stat_result->awb.final_b_gain);
-	}
-
-	spin_unlock(&node->lock);
+	vb2_set_plane_payload(&buffer->vb.vb2_buf, 0, sizeof(*stat_result));
+	buffer->vb.sequence = frame_sequence;
+	buffer->vb.vb2_buf.timestamp = timestamp;
+	dev_dbg_ratelimited(isp->dev,
+		"stat frame=%u ae=%u skew=%u awb=%u/%u dgain=%u dropped=%u",
+		frame_sequence, stat_result->ae_response, stat_result->ae_skewness,
+		stat_result->awb_r_gain, stat_result->awb_b_gain,
+		stat_result->dgain_index, dropped_frames);
+	vb2_buffer_done(&buffer->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
 static int isp_stat_node_register(struct isp_state *isp, struct v4l2_device *v4l2_dev)
@@ -712,23 +856,8 @@ static int isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 
 static int isp_start_stream(struct isp_state *isp)
 {
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
-	/*
-	 * Enable interrupts for: FRAME_START, FRAME_DONE, AE_DONE.
-	 * AWB_DONE is not connected in current hardware.
-	 * Writing 0 to a mask bit enables the interrupt (active-low mask).
-	 */
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK,
-		~(ISP_REG_INT_MASK_BIT_FRAME_START |
-		  ISP_REG_INT_MASK_BIT_FRAME_DONE  |
-		  ISP_REG_INT_MASK_BIT_AE_DONE));
 	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 0);
-
-	isp->frame_sequence = 0;
-	isp->int_status = 0;
 	isp->streaming = true;
-
-	enable_irq(isp->irq);
 
 	return 0;
 }
@@ -736,11 +865,6 @@ static int isp_start_stream(struct isp_state *isp)
 static void isp_stop_stream(struct isp_state *isp)
 {
 	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
-
-	disable_irq(isp->irq);
-
 	isp->streaming = false;
 }
 
@@ -754,40 +878,34 @@ static void isp_queue_event_frame_sync(struct isp_state *isp, u32 frame_seq)
 	v4l2_event_queue(isp->subdev.devnode, &event);
 }
 
-static irqreturn_t isp_irq_handler(int irq, void *data)
+static irqreturn_t isp_irq_handler(void *data)
 {
 	struct isp_state *isp = (struct isp_state *)data;
-	struct device *dev = isp->dev;
-	u32 status, done_mask;
+	u32 status, mask, pending;
 
 	status = INFINITE_ISP_READ_REG(isp->isp_base, config, INT_STATUS);
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+	mask = INFINITE_ISP_READ_REG(isp->isp_base, config, INT_MASK);
+	pending = status & ~mask;
+	if (status)
+		INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
 
-	if (!status) {
+	if (!pending) {
 		return IRQ_NONE;
 	}
 
-	dev_info_ratelimited(dev, "ISP IRQ status 0x%08X", status);
-
-	if (status & ISP_REG_INT_STATUS_BIT_FRAME_START) {
+	if ((pending & ISP_REG_INT_STATUS_BIT_FRAME_START) && isp->subdev.devnode) {
 		isp_queue_event_frame_sync(isp, isp->frame_sequence);
 	}
 
-	isp->int_status |= status;
+	isp->int_status |= pending;
 
 	/*
-	 * We expect FRAME_START followed by FRAME_DONE and AE_DONE.
-	 * Note: AWB_DONE is not connected in current hardware
-	 * (int_awb_done is commented out in the AXI wrapper HDL).
-	 * AWB gains update continuously and don't generate an interrupt.
+	 * FRAME_DONE is the record boundary. AE_DONE is optional on the current
+	 * bitstream and AWB_DONE is not connected, so neither may block metadata.
+	 * Their sampled validity is reported in the metadata flags instead.
 	 */
-	done_mask  = ISP_REG_INT_STATUS_BIT_FRAME_START;
-	done_mask |= ISP_REG_INT_STATUS_BIT_FRAME_DONE;
-	done_mask |= ISP_REG_INT_STATUS_BIT_AE_DONE;
-	/* AWB_DONE never fires — exclude it */
-
-	if ((isp->int_status & done_mask) == done_mask) {
-		isp_stat_send_measurement(&isp->stat_node);
+	if (pending & ISP_REG_INT_STATUS_BIT_FRAME_DONE) {
+		isp_stat_send_measurement(&isp->stat_node, isp->int_status);
 		isp->frame_sequence++;
 		isp->int_status = 0;
 	}
@@ -1575,6 +1693,7 @@ static int isp_probe(struct platform_device *pdev)
 	struct isp_state *isp;
 	int num_clks = ARRAY_SIZE(isp_clks);
 	struct device *dev = &pdev->dev;
+	int irq;
 	int ret;
 
 	isp = devm_kzalloc(dev, sizeof(*isp), GFP_KERNEL);
@@ -1604,21 +1723,6 @@ static int isp_probe(struct platform_device *pdev)
         dev_err(&pdev->dev, "Failed to map luts registers: %d\n", ret);
         return ret;
     }
-
-	isp->irq = platform_get_irq(pdev, 0);
-	if (isp->irq < 0) {
-		dev_err(dev, "No irq resource in DT");
-		return isp->irq;
-	}
-
-	ret = devm_request_threaded_irq(dev, isp->irq, NULL,
-					isp_irq_handler,
-					IRQF_ONESHOT | IRQF_NO_AUTOEN,
-					dev_name(dev), isp);
-	if (ret) {
-		dev_err(dev, "Err = %d Interrupt handler reg failed!\n", ret);
-		return ret;
-	}
 
 	ret = devm_clk_bulk_get(dev, num_clks, isp->clks);
 	if (ret) {
@@ -1666,9 +1770,11 @@ static int isp_probe(struct platform_device *pdev)
 	subdev->owner = THIS_MODULE;
 	subdev->dev = dev;
 	subdev->internal_ops = &isp_internal_ops;
+	subdev->ctrl_handler = &isp->config_ctrls;
 	strscpy(subdev->name, dev_name(dev), sizeof(subdev->name));
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
 	subdev->entity.ops = &isp_media_ops;
+	subdev->entity.function = MEDIA_ENT_F_PROC_VIDEO_ISP;
 	v4l2_set_subdevdata(subdev, isp);
 
 	ret = media_entity_pads_init(&subdev->entity, ISP_MEDIA_PADS,
@@ -1680,10 +1786,36 @@ static int isp_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, isp);
 
+	/*
+	 * Old overlays put the physical parent IRQ on the ISP node. New overlays
+	 * give it to the dedicated dispatcher node, so only attach it here when
+	 * the legacy interrupt property is present.
+	 */
+	if (of_find_property(dev->of_node, "interrupts", NULL)) {
+		irq = platform_get_irq(pdev, 0);
+		if (irq < 0) {
+			ret = irq;
+			goto err_media_cleanup;
+		}
+		ret = xil_isp_irq_attach(dev, irq);
+		if (ret) {
+			dev_err(dev, "failed to attach IRQ dispatcher: %d", ret);
+			goto err_media_cleanup;
+		}
+		isp->irq_dispatcher_owner = true;
+	}
+
+	ret = xil_isp_irq_register(XIL_ISP_IRQ_SOURCE_ISP,
+				   isp_irq_handler, isp);
+	if (ret) {
+		dev_err(dev, "failed to register ISP IRQ source: %d", ret);
+		goto err_irq_detach;
+	}
+
 	ret = v4l2_async_register_subdev(subdev);
 	if (ret < 0) {
 		dev_err(dev, "failed to register subdev\n");
-		goto err_media_cleanup;
+		goto err_irq_unregister;
 	}
 
 	isp->debug_dir = debugfs_create_dir("xil_isp", NULL);
@@ -1696,9 +1828,17 @@ static int isp_probe(struct platform_device *pdev)
 		debugfs_create_file("luts_reg_offset", 0644, isp->debug_dir, isp,
 				    &lut_offset_fops);
 	}
+
 	dev_info(dev, ISP_DRIVER_NAME " driver probed!");
 
 	return 0;
+err_irq_unregister:
+	xil_isp_irq_unregister(XIL_ISP_IRQ_SOURCE_ISP, isp);
+err_irq_detach:
+	if (isp->irq_dispatcher_owner) {
+		xil_isp_irq_detach(dev);
+		isp->irq_dispatcher_owner = false;
+	}
 err_media_cleanup:
 	media_entity_cleanup(&subdev->entity);
 err_ctrl_free:
@@ -1718,16 +1858,22 @@ static int isp_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(isp->debug_dir);
 	isp->debug_dir = NULL;
 
-	mutex_lock(&isp->lock);
-	if (isp->streaming) {
-		isp_stop_stream(isp);
-	} else {
-		INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
-		INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
-		INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+	if (isp->irq_source_enabled) {
+		xil_isp_irq_disable(XIL_ISP_IRQ_SOURCE_ISP);
+		isp->irq_source_enabled = false;
 	}
+	xil_isp_irq_unregister(XIL_ISP_IRQ_SOURCE_ISP, isp);
+	if (isp->irq_dispatcher_owner) {
+		xil_isp_irq_detach(isp->dev);
+		isp->irq_dispatcher_owner = false;
+	}
+
+	mutex_lock(&isp->lock);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
+	isp->streaming = false;
 	mutex_unlock(&isp->lock);
-	synchronize_irq(isp->irq);
 
 	v4l2_async_unregister_subdev(subdev);
 	media_entity_cleanup(&subdev->entity);

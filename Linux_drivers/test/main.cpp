@@ -11,7 +11,8 @@
 #include <opencv2/opencv.hpp>
 #include "V4L2Subdev.hpp"
 #include "V4L2Stream.hpp"
-#include "ISPTuner.hpp"
+#include "infinite_isp/tuning.hpp"
+#include "infinite_isp/v4l2_backend.hpp"
 
 static std::atomic<bool> g_running{true};
 static std::atomic<uint64_t> g_sensor_frames{0};
@@ -137,66 +138,56 @@ int setSubDevFmt() {
     return 0;
 }
 
-/*
- * ISP Tuning Thread
- *
- * The hardware AWB continuously computes optimal R/B gains and exposes
- * them via read-only registers (REG_AWB_FINAL_RGAIN, FINAL_BGAIN).
- * However, these are NOT automatically applied to the WB pipeline.
- * This thread reads the AWB results and writes them to the WB module.
- *
- * The hardware AE computes an exposure response (0=under, 1=proper, 2=over)
- * which this thread uses to adjust the digital gain (DGAIN).
- *
- * The stat metadata node (/dev/video with name "xil-isp-lite_stat")
- * provides per-frame AE/AWB statistics via V4L2 meta capture buffers.
- * We use this for timing (each buffer = one frame completed).
- *
- * As a fallback, we can also read AE/AWB results directly via V4L2
- * EXT_CTRLS on the ISP subdev node.
- */
-static void tuningThread(IspControl *ctrl, IspStatReader *statReader) {
-    int tuningInterval = 0;
+static infinite_isp::TuningConfig tuningConfigFromEnvironment(bool &enabled) {
+    infinite_isp::TuningConfig config;
+    const std::string mode = std::getenv("ISP_TUNING_MODE")
+        ? std::getenv("ISP_TUNING_MODE") : "hardware";
 
-    std::cout << "[Tuning] Thread started (poll mode via EXT_CTRLS)" << std::endl;
-    int debugPrint = 0;
+    enabled = mode != "off";
+    if (mode == "software-ae") {
+        config.ae_mode = infinite_isp::AeMode::Software;
+    } else if (mode != "hardware" && mode != "off") {
+        std::cerr << "[Tuning] Unknown ISP_TUNING_MODE='" << mode
+                  << "', using hardware mode" << std::endl;
+    }
+    return config;
+}
+
+static void tuningThread(infinite_isp::V4L2Backend *backend,
+                         infinite_isp::AutoTuner *tuner) {
+    unsigned int print_interval = 0;
+    const char *mode = tuner->config().ae_mode == infinite_isp::AeMode::Hardware
+        ? "hardware AE/AWB" : "software AE + hardware AWB";
+    std::cout << "[Tuning] Metadata-driven thread started (" << mode << ")"
+              << std::endl;
 
     while (g_running) {
-        /* Poll AWB/AE registers directly every ~100ms (~10 Hz) */
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        /*
-         * 1. Apply HW AWB result gains to WB pipeline.
-         *    The AWB block continuously computes optimal gains;
-         *    we read them and write to WB registers so they take effect.
-         */
-        if (ctrl->applyAwbToWb()) {
-            g_tuning_frames.fetch_add(1, std::memory_order_relaxed);
+        infinite_isp::FrameStatistics statistics;
+        const auto result = backend->read(statistics, 500);
+        if (result == infinite_isp::ReadResult::Timeout)
+            continue;
+        if (result == infinite_isp::ReadResult::Error) {
+            if (g_running)
+                std::cerr << "[Tuning] " << backend->lastError() << std::endl;
+            break;
         }
 
-        /* Debug: print AWB/AE values every 2 seconds */
-        if (++debugPrint >= 20) {
-            debugPrint = 0;
-            uint32_t rGain = 0, bGain = 0;
-            ctrl->getAwbResult(rGain, bGain);
-            uint32_t aeResp = 0, aeSkew = 0, aeDone = 0;
-            ctrl->getAeStatus(aeResp, aeSkew, aeDone);
-            uint32_t dgIdx = 0;
-            ctrl->getDGainIndex(dgIdx);
-            uint32_t wbR = 0, wbB = 0;
-            ctrl->getWbGains(wbR, wbB);
-            printf("[Tuning] AWB(out): R=%u B=%u | AE: resp=%u skew=%u done=%u | "
-                   "DGAIN idx=%u | WB(applied): R=%u B=%u\n",
-                   rGain, bGain, aeResp, aeSkew, aeDone, dgIdx, wbR, wbB);
-        }
+        g_tuning_frames.fetch_add(1, std::memory_order_relaxed);
+        const auto controls = tuner->process(statistics);
+        if (!controls.empty() && !backend->apply(controls))
+            std::cerr << "[Tuning] apply failed: " << backend->lastError()
+                      << std::endl;
 
-        /*
-         * 2. Adjust digital gain based on AE response.
-         *    Run every 4 cycles (~2.5 Hz) to avoid oscillation.
-         */
-        if (++tuningInterval >= 4) {
-            tuningInterval = 0;
-            ctrl->adjustExposure();
+        if (++print_interval >= 30) {
+            print_interval = 0;
+            std::cout << "[Tuning] seq=" << statistics.sequence
+                      << " irq=0x" << std::hex << statistics.irq_status << std::dec
+                      << " AE=" << infinite_isp::toString(statistics.ae_response)
+                      << " skew=" << statistics.ae_skewness
+                      << " AWB(effective)=" << statistics.awb_r_gain
+                      << "/" << statistics.awb_b_gain
+                      << " DGAIN=" << statistics.dgain_index
+                      << " dropped=" << statistics.dropped_frames << std::endl;
         }
     }
 
@@ -244,76 +235,41 @@ int ispPipelineRun() {
     cap2.startStreaming();
     // viewer.start();
 
-    /* ── Tuning Setup ───────────────────────────────────── */
-    /*
-     * Dynamic ISP tuning via AE/AWB stats.
-     * DISABLED by default — the static init values from isp_init.h
-     * (matching the Vitis firmware) produce correct images.
-     *
-     * To enable: #define ENABLE_ISP_TUNING 1
-     *   - reads HW AWB gains → writes WB block
-     *   - reads AE response  → adjusts digital gain
-     */
-    #define ENABLE_ISP_TUNING 0
-
-    #if ENABLE_ISP_TUNING
-    /*
-     * V4L2 custom controls (CID_ISP_WB, CID_ISP_DGAIN, etc.) are
-     * registered on the stat metadata node (xil-isp-lite_stat), NOT
-     * on the subdev.  Open the stat node for control I/O and for
-     * metadata streaming.
-     */
-    std::string statDevPath = findIspStatDev();
-    std::string ispSubdevPath = findIspSubdev();
-
-    std::unique_ptr<IspControl> ispCtrl;
-    std::unique_ptr<IspStatReader> statReader;
+    bool tuningEnabled = false;
+    const auto tuningConfig = tuningConfigFromEnvironment(tuningEnabled);
+    std::unique_ptr<infinite_isp::AutoTuner> tuner;
+    std::unique_ptr<infinite_isp::V4L2Backend> tuningBackend;
     std::thread tuning;
 
-    /* Prefer stat node for controls; fall back to subdev */
-    std::string ctrlDev;
-    if (!statDevPath.empty()) {
-        ctrlDev = statDevPath;
-    } else if (!ispSubdevPath.empty()) {
-        ctrlDev = ispSubdevPath;
-    }
-
-    if (!ctrlDev.empty()) {
-        std::cout << "[Tuning] ISP ctrl device: " << ctrlDev << std::endl;
-        ispCtrl = std::make_unique<IspControl>(ctrlDev);
-        if (!ispCtrl->ok()) {
-            std::cerr << "[Tuning] WARNING: Cannot open ISP control" << std::endl;
-            ispCtrl.reset();
-        }
-    }
-
-    if (!statDevPath.empty()) {
-        std::cout << "[Tuning] Found stat node: " << statDevPath << std::endl;
-        statReader = std::make_unique<IspStatReader>(statDevPath);
-        if (statReader->openDevice() && statReader->initMMap(4)) {
-            statReader->queueAll();
-            statReader->startStreaming();
+    if (tuningEnabled) {
+        const std::string statDevice = infinite_isp::findStatDevice();
+        if (statDevice.empty()) {
+            std::cerr << "[Tuning] Statistics node not found; tuning disabled"
+                      << std::endl;
         } else {
-            std::cerr << "[Tuning] WARNING: Cannot init stat reader, "
-                      << "falling back to poll mode" << std::endl;
-            statReader.reset();
+            tuner = std::make_unique<infinite_isp::AutoTuner>(tuningConfig);
+            tuningBackend =
+                std::make_unique<infinite_isp::V4L2Backend>(statDevice);
+            if (!tuningBackend->start(4)) {
+                std::cerr << "[Tuning] " << tuningBackend->lastError()
+                          << std::endl;
+                tuningBackend.reset();
+                tuner.reset();
+            } else if (!tuningBackend->apply(tuner->initialControls())) {
+                std::cerr << "[Tuning] Initial controls failed: "
+                          << tuningBackend->lastError() << std::endl;
+                tuningBackend.reset();
+                tuner.reset();
+            } else {
+                std::cout << "[Tuning] Statistics/control device: "
+                          << statDevice << std::endl;
+                tuning = std::thread(tuningThread, tuningBackend.get(),
+                                     tuner.get());
+            }
         }
     } else {
-        std::cerr << "[Tuning] WARNING: Stat node not found. "
-                  << "Tuning will poll via EXT_CTRLS." << std::endl;
+        std::cout << "[Tuning] Disabled by ISP_TUNING_MODE=off" << std::endl;
     }
-
-    if (ispCtrl) {
-        tuning = std::thread(tuningThread, ispCtrl.get(), statReader.get());
-    } else {
-        std::cerr << "[Tuning] WARNING: No ISP control device found. "
-                  << "Tuning disabled." << std::endl;
-    }
-    #else
-    std::cout << "[Tuning] Dynamic tuning disabled (ENABLE_ISP_TUNING=0). "
-              << "Using static init values from isp_init.h." << std::endl;
-    #endif
-    /* ──────────────────────────────────────────────────── */
 
     IndexQueue ready_q(8);
 
@@ -422,20 +378,23 @@ int ispPipelineRun() {
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
     /* Cleanup */
-    #if ENABLE_ISP_TUNING
-    if (statReader) {
-        statReader->stopStreaming();
-    }
-    #endif
     ready_q.stop();
     t0.join();
     t1.join();
     t2.join();
-    monitor.join();
-    #if ENABLE_ISP_TUNING
     if (tuning.joinable())
         tuning.join();
-    #endif
+    if (tuningBackend) {
+        if (tuningConfig.ae_mode == infinite_isp::AeMode::Software) {
+            infinite_isp::ControlUpdate restore;
+            restore.auto_gain = true;
+            if (!tuningBackend->apply(restore))
+                std::cerr << "[Tuning] Failed to restore hardware AE: "
+                          << tuningBackend->lastError() << std::endl;
+        }
+        tuningBackend->stop();
+    }
+    monitor.join();
     // viewer.stop();
     return 0;
 }

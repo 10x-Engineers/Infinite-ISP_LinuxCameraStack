@@ -149,37 +149,42 @@ struct xil_isp_lite_stat_awb_cfg {
 #define V4L2_META_FMT_XIL_ISP_LITE_STAT		v4l2_fourcc('X', 'I', 'S', 'P')
 
 /*
- * Hardware AE/AWB statistics structure.
- * NOTE: The current hardware (xil_isp_lite) does NOT provide per-channel
- * histograms via AXI registers. It provides:
- * - AE:  response [1:0] (0=underexposed, 1=proper, 2=overexposed),
- *        skewness [15:0], done flag
- * - AWB: final_r_gain [11:0], final_b_gain [11:0]
+ * Versioned, fixed-size frame statistics ABI.
  *
- * The fields below expose what the hardware actually provides.
- * Fields marked "not available from HW" are reserved for future use.
+ * The current RTL does not expose histograms or channel sums. It exposes the
+ * AE decision/skewness, the gains computed by AWB, and the effective digital
+ * gain index. Keep this record flat and append-only so a future libcamera IPA
+ * backend can consume it without depending on the private register layout.
  */
+#define XIL_ISP_LITE_STAT_ABI_VERSION		1U
 
-struct xil_isp_lite_stat_ae_result {
-	__u64 timestamp_ns;         /* frame timestamp */
-	__u32 frame_sequence;       /* frame sequence number */
-	__u32 ae_response;          /* [1:0] 0=underexposed, 1=proper, 2=overexposed */
-	__u32 ae_skewness;          /* [15:0] histogram skewness metric */
-	__u32 ae_done;              /* 1 = AE computation complete this frame */
-	__u32 reserved[8];          /* padding for future expansion */
-};
+#define XIL_ISP_LITE_STAT_FLAG_AE_VALID		(1U << 0)
+#define XIL_ISP_LITE_STAT_FLAG_AWB_VALID	(1U << 1)
+#define XIL_ISP_LITE_STAT_FLAG_DGAIN_VALID	(1U << 2)
 
-struct xil_isp_lite_stat_awb_result {
-	__u64 timestamp_ns;         /* frame timestamp */
-	__u32 frame_sequence;       /* frame sequence number */
-	__u32 final_r_gain;         /* [11:0] AWB computed R gain */
-	__u32 final_b_gain;         /* [11:0] AWB computed B gain */
-	__u32 reserved[8];          /* padding for future expansion */
-};
+/* Values produced by isp_ae.v. */
+#define XIL_ISP_LITE_AE_RESPONSE_NORMAL		0U
+#define XIL_ISP_LITE_AE_RESPONSE_OVEREXPOSED	1U
+#define XIL_ISP_LITE_AE_RESPONSE_HOLD		2U
+#define XIL_ISP_LITE_AE_RESPONSE_UNDEREXPOSED	3U
 
 struct xil_isp_lite_stat_result {
-	struct xil_isp_lite_stat_ae_result  ae;
-	struct xil_isp_lite_stat_awb_result awb;
+	__u32 abi_version;
+	__u32 record_size;
+	__u32 frame_sequence;
+	__u32 irq_status;
+	__u64 timestamp_ns;
+	__u32 flags;
+	__u32 ae_response;
+	__u32 ae_skewness;
+	__u32 ae_done;
+	__u32 awb_r_gain;
+	__u32 awb_b_gain;
+	__u32 dgain_index;
+	__u32 wb_r_gain;
+	__u32 wb_b_gain;
+	__u32 dropped_frames;
+	__u32 reserved[8];
 };
 
 #endif /* __XIL_ISP_LITE_H_ */

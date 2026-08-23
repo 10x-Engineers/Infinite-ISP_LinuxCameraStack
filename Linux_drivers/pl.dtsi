@@ -250,14 +250,18 @@
 				xlnx,tri-default = <0xFFFFFFFF>;
 				xlnx,tri-default-2 = <0xFFFFFFFF>;
 			};
+			isp_irq_dispatcher: isp_irq_dispatcher {
+				compatible = "xlnx,infinite-isp-irq-dispatcher";
+				interrupt-names = "parent";
+				interrupt-parent = <&axi_intc>;
+				interrupts = <3 2>;
+			};
+
 			infinite_isp_pipe: infinite_isp@a0060000 {
 				/* This is a place holder node for a custom IP, user may need to update the entries */
 				clock-names = "pclk", "s00_axi_aclk";
 				clocks = <&misc_clk_0>, <&misc_clk_0>;
 				compatible = "xlnx,xil-isp-lite-1.0";
-				interrupt-names = "isp_irq";
-				interrupt-parent = <&axi_intc>;
-				interrupts = <3 2>;
 				reg = <0x0 0xa0060000 0x0 0x3ffc
 					0x0 0xa0068000 0x0 0x17ffc>;
 				reg-names = "isp", "luts";
@@ -410,6 +414,7 @@
 				/* This is a place holder node for a custom IP, user may need to update the entries */
 				compatible = "xlnx,xil-vip-1.0";
 				reg = <0x0 0xa0064000 0x0 0xbfc>;
+				xlnx,irq-source = <1>;
 				xlnx,s00-axi-addr-width = <0xc>;
 				xlnx,s00-axi-data-width = <0x20>;
 				ports {
@@ -435,6 +440,7 @@
 				/* This is a place holder node for a custom IP, user may need to update the entries */
 				compatible = "xlnx,xil-vip-1.0";
 				reg = <0x0 0xa0066000 0x0 0xbfc>;
+				xlnx,irq-source = <2>;
 				xlnx,s00-axi-addr-width = <0xc>;
 				xlnx,s00-axi-data-width = <0x20>;
 				ports {

@@ -1,0 +1,57 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+#include "infinite_isp/tuning.hpp"
+
+#include <cassert>
+
+using infinite_isp::AeMode;
+using infinite_isp::AeResponse;
+using infinite_isp::AutoTuner;
+using infinite_isp::FrameStatistics;
+using infinite_isp::TuningConfig;
+
+static FrameStatistics statistics(AeResponse response, std::uint32_t gain)
+{
+    FrameStatistics value;
+    value.flags = infinite_isp::kStatFlagAeValid |
+                  infinite_isp::kStatFlagDgainValid;
+    value.ae_response = response;
+    value.dgain_index = gain;
+    return value;
+}
+
+int main()
+{
+    AutoTuner hardware;
+    const auto hardware_controls = hardware.initialControls();
+    assert(hardware_controls.auto_gain == true);
+    assert(hardware_controls.auto_white_balance == true);
+    assert(hardware.process(statistics(AeResponse::Underexposed, 10)).empty());
+
+    TuningConfig config;
+    config.ae_mode = AeMode::Software;
+    config.min_dgain_index = 2;
+    config.max_dgain_index = 12;
+    config.dgain_step = 3;
+    config.decision_frames = 2;
+    AutoTuner software(config);
+
+    const auto software_controls = software.initialControls();
+    assert(software_controls.auto_gain == false);
+    assert(software_controls.auto_white_balance == true);
+
+    assert(software.process(statistics(AeResponse::Underexposed, 8)).empty());
+    auto update = software.process(statistics(AeResponse::Underexposed, 8));
+    assert(update.digital_gain == 11);
+
+    assert(software.process(statistics(AeResponse::Overexposed, 4)).empty());
+    update = software.process(statistics(AeResponse::Overexposed, 4));
+    assert(update.digital_gain == 2);
+
+    assert(software.process(statistics(AeResponse::Underexposed, 12)).empty());
+    assert(software.process(statistics(AeResponse::Underexposed, 12)).empty());
+
+    FrameStatistics invalid = statistics(AeResponse::Underexposed, 5);
+    invalid.flags = 0;
+    assert(software.process(invalid).empty());
+    return 0;
+}

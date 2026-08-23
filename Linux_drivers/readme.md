@@ -105,6 +105,60 @@ two media graphs and check `dmesg` after each cycle. If removal reports an oops,
 a hung task, or an incomplete graph, stop reloading and reboot the board to
 restore the default state.
 
+### Shared ISP/VIP interrupt dispatcher
+
+The FPGA exposes one level-sensitive parent interrupt containing status from
+the ISP, VIP1, and VIP2 blocks. `xil-isp-irq.ko` owns that interrupt and
+dispatches it to the three child register-bank handlers. Each child reads and
+acknowledges only its local status register; the parent handler polls every
+registered bank so that all contributors to the shared level are cleared.
+
+The device tree therefore assigns the physical interrupt to one dispatcher
+node, instead of assigning the same interrupt to each processing block:
+
+```dts
+isp_irq_dispatcher: isp_irq_dispatcher {
+    compatible = "xlnx,infinite-isp-irq-dispatcher";
+    interrupt-names = "parent";
+    interrupt-parent = <&axi_intc>;
+    interrupts = <3 2>;
+};
+```
+
+VIP instances select their dispatcher slot with `xlnx,irq-source = <1>` for
+VIP1 and `<2>` for VIP2. The ISP uses slot 0. For an older, already-loaded
+overlay that still places `interrupts` on the ISP node, the ISP driver attaches
+that IRQ to the same dispatcher API. This compatibility path permits driver
+reload testing without replacing the overlay or rebooting.
+
+The dispatcher source is enabled when the statistics stream starts. ISP frame
+start/frame done events are acknowledged by the ISP child; metadata is
+completed at frame done. VIP interrupts remain masked until its subdevice
+stream starts. A healthy run should show the dispatcher as the only IRQ owner
+and no unhandled interrupt count:
+
+```bash
+grep xil-isp-irq /proc/interrupts
+cat /proc/irq/67/spurious
+```
+
+### ISP statistics and standard controls
+
+The `xil-isp-lite_stat` node is a V4L2 metadata-capture device using fourcc
+`XISP`. It returns one fixed-size, versioned record per ISP frame done. ABI
+version 1 is 96 bytes and contains the sequence/timestamp, accumulated IRQ
+status, AE response and skewness, effective AWB gains, DGAIN index, manual WB
+gains, validity flags, and the number of dropped metadata records. The record
+layout is declared in `linux/xil-isp-lite.h`; consumers must check both
+`abi_version` and `record_size`.
+
+The statistics node and ISP subdevice expose standard V4L2 controls for
+`white_balance_automatic`, `gain_automatic`, `red_balance`, `blue_balance`, and
+`digital_gain`. The current RTL reports AE decisions as 0 normal, 1
+overexposed, 2 hold, and 3 underexposed. Hardware AWB gains already feed the
+effective WB path, so applications must not copy those gains back into the
+manual WB controls while automatic white balance is enabled.
+
 ------
 
 
@@ -167,9 +221,31 @@ sudo apt install libopencv-dev
 cd Linux_drivers/test
 mkdir build
 cd build
-cmake .. && make
+sudo cmake ..
+sudo cmake --build . -j8
 ./isp_pipeline
 ```
+
+The test application builds and links `libisp_tuning`, starts the XISP metadata
+stream, and runs tuning from frame statistics rather than polling private
+register payloads. Select a policy with `ISP_TUNING_MODE`:
+
+```bash
+# Default: let RTL AE/AWB update the effective gains and observe statistics.
+ISP_TUNING_MODE=hardware ./isp_pipeline
+
+# User-space DGAIN loop driven by the RTL AE decision; hardware AWB remains on.
+ISP_TUNING_MODE=software-ae ./isp_pipeline
+
+# Image pipeline only.
+ISP_TUNING_MODE=off ./isp_pipeline
+```
+
+`software-ae` disables hardware automatic gain while running and restores it
+on exit. `libisp_tuning/include/infinite_isp/tuning.hpp` contains the portable,
+V4L2-independent policy intended for later reuse by a libcamera IPA/backend;
+`v4l2_backend.hpp` is the Linux transport and control adapter. Run the policy
+unit test from the build directory with `ctest --output-on-failure`.
 
 ## *How to Obtain Kernel Headers*
 

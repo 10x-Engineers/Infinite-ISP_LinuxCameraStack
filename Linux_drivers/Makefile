@@ -17,7 +17,8 @@ else
 endif
 
 # Kernel modules
-obj-m := xil-isp-lite.o
+obj-m := xil-isp-irq.o
+obj-m += xil-isp-lite.o
 obj-m += xil-vip.o
 obj-m += mipi-rx-to-video.o
 obj-m += ar1335.o
@@ -62,6 +63,7 @@ install_modules: modules
 	$(MAKE) load_modules
 
 load_modules: check_root
+	insmod xil-isp-irq.ko
 	insmod xil-isp-lite.ko
 	insmod xil-vip.ko
 	insmod mipi-rx-to-video.ko
@@ -127,7 +129,7 @@ check_devices_idle:
 
 unload_modules: check_root unbind_composites
 	@set -eu; \
-	for module_name in xlnx_imx219 ar1335 mipi_rx_to_video xil_vip xil_isp_lite; do \
+	for module_name in xlnx_imx219 ar1335 mipi_rx_to_video xil_vip xil_isp_lite xil_isp_irq; do \
 		grep -q "^$$module_name " /proc/modules || continue; \
 		echo "Removing $$module_name"; \
 		rmmod "$$module_name"; \

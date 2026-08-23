@@ -1,6 +1,7 @@
 Linux_drivers/linux_headers/
 Linux_drivers/*.cmd
 Linux_drivers/*.o
+Linux_drivers/.*.o.d
 Linux_drivers/*.ko
 Linux_drivers/*.mod*
 Linux_drivers/*.dtbo
@@ -10,3 +11,4 @@ Linux_drivers/*.png
 Linux_drivers/*.raw
 Linux_drivers/*.raw10
 Linux_drivers/test/build*/
+Linux_drivers/test/*.gch

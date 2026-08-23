@@ -18,6 +18,7 @@
 #include <media/v4l2-event.h>
 #include "infinite_isp_register.h"
 #include "linux/isp_init.h"
+#include "xil-isp-irq.h"
 #include <linux/debugfs.h>
 
 /* Register register map */
@@ -64,6 +65,9 @@ struct vip_state {
 	char dir_name[32];
     spinlock_t reg_lock;
 	resource_size_t phys_addr;
+	enum xil_isp_irq_source irq_source;
+	bool irq_source_enabled;
+	u32 frame_sequence;
 };
 
 static inline struct vip_state *
@@ -120,23 +124,21 @@ static int vip_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 static int vip_start_stream(struct vip_state *vip)
 {
 	struct REG_Infinite_ISP_VIP *infinite_isp_vip;
+	u32 in_width = vip->pad_format[VIP_PAD_SINK].width;
+	u32 in_height = vip->pad_format[VIP_PAD_SINK].height;
+	u32 out_width = vip->pad_format[VIP_PAD_SOURCE].width;
+	u32 out_height = vip->pad_format[VIP_PAD_SOURCE].height;
+	u32 out_code = vip->pad_format[VIP_PAD_SOURCE].code;
+	u32 scale_h = in_width / out_width;
+	u32 scale_v = in_height / out_height;
+	u32 top_en = 0;
+	int ret;
 
 	infinite_isp_vip = kzalloc(sizeof(*infinite_isp_vip), GFP_KERNEL);
 	if (!infinite_isp_vip) {
 		dev_err(vip->dev, "Failed to allocate infinite_isp_vip");
 		return -ENOMEM;
 	}
-	u32 in_width   = vip->pad_format[VIP_PAD_SINK].width;
-	u32 in_height  = vip->pad_format[VIP_PAD_SINK].height;
-	u32 out_width  = vip->pad_format[VIP_PAD_SOURCE].width;
-	u32 out_height = vip->pad_format[VIP_PAD_SOURCE].height;
-	u32 out_code   = vip->pad_format[VIP_PAD_SOURCE].code;
-
-	u32 scale_h = in_width / out_width;
-	u32 scale_v = in_height / out_height;
-
-	u32 top_en = 0;
-
 	if (out_code == MEDIA_BUS_FMT_UYVY8_1X16) {
 		infinite_isp_vip->yuvconvformat.YUV444TO422 = 1;
 	} else if (out_code == MEDIA_BUS_FMT_VYYUYY8_1X24) {
@@ -167,11 +169,22 @@ static int vip_start_stream(struct vip_state *vip)
 	// 	vip_write(vip, VIP_REG_CROP_H, out_height);
 	// }
 
-	// vip_write(vip, VIP_REG_INT_STATUS, 0);
-	// vip_write(vip, VIP_REG_INT_MASK, ~(VIP_REG_INT_MASK_BIT_FRAME_START|VIP_REG_INT_MASK_BIT_FRAME_DONE));
-	// vip_write(vip, VIP_REG_RESET, 0);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK, ~0U);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 0);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_STATUS, 0);
+	ret = xil_isp_irq_enable(vip->irq_source);
+	if (ret) {
+		kfree(infinite_isp_vip);
+		return ret;
+	}
+	vip->irq_source_enabled = true;
+	vip->frame_sequence = 0;
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK,
+		~(VIP_REG_INT_MASK_BIT_FRAME_START |
+		  VIP_REG_INT_MASK_BIT_FRAME_DONE));
 
 	vip->streaming = true;
+	kfree(infinite_isp_vip);
 
 	return 0;
 }
@@ -179,8 +192,13 @@ static int vip_start_stream(struct vip_state *vip)
 static void vip_stop_stream(struct vip_state *vip)
 {
 	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 1);
-	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK, 0);
+	/* Quiesce the local bank before disabling its shared-IRQ source. */
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK, ~0U);
 	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_STATUS, 0);
+	if (vip->irq_source_enabled) {
+		xil_isp_irq_disable(vip->irq_source);
+		vip->irq_source_enabled = false;
+	}
 
 	vip->streaming = false;
 }
@@ -217,37 +235,32 @@ static void vip_queue_event_frame_sync(struct vip_state *vip, u32 frame_seq)
 	v4l2_event_queue(vip->subdev.devnode, &event);
 }
 
-/**
- * vip_irq_handler - Interrupt handler for CSI-2
- * @irq: IRQ number
- * @data: Pointer to device state
- *
- * In the interrupt handler, a list of event counters are updated for
- * corresponding interrupts. This is useful to get status / debug.
- *
- * Return: IRQ_HANDLED after handling interrupts
- */
-// static irqreturn_t vip_irq_handler(int irq, void *data)
-// {
-// 	struct vip_state *vip = (struct vip_state *)data;
-// 	//struct device *dev = vip->dev;
-// 	u32 status;
+static irqreturn_t vip_irq_handler(void *data)
+{
+	struct vip_state *vip = data;
+	u32 status, mask, pending;
 
-// 	status = vip_read(vip, VIP_REG_INT_STATUS);
-// 	vip_write(vip, VIP_REG_INT_STATUS, 0);
+	status = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config,
+					   VIP_INT_STATUS);
+	mask = INFINITE_ISP_VIP_READ_REG(vip->iomem, vip_config,
+					 VIP_INT_MASK);
+	pending = status & ~mask;
+	if (status)
+		INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config,
+					   VIP_INT_STATUS, 0);
+	if (!pending)
+		return IRQ_NONE;
 
-// 	if (status & VIP_REG_INT_STATUS_BIT_FRAME_START) {
-// 		//dev_info(dev, "IRQ FRAME_START");
-// 		vip_queue_event_frame_sync(vip, 0);
-// 	}
+	if ((pending & VIP_REG_INT_STATUS_BIT_FRAME_START) &&
+	    vip->subdev.devnode)
+		vip_queue_event_frame_sync(vip, vip->frame_sequence);
 
-// 	if (status & VIP_REG_INT_STATUS_BIT_FRAME_DONE) {
-// 		//XXX
-// 		//dev_info(dev, "IRQ FRAME_DONE");
-// 	}
+	if (pending & VIP_REG_INT_STATUS_BIT_FRAME_DONE)
+		vip->frame_sequence++;
 
-// 	return IRQ_HANDLED;
-// }
+	dev_dbg_ratelimited(vip->dev, "VIP IRQ status 0x%08x", pending);
+	return IRQ_HANDLED;
+}
 
 /**
  * vip_init_cfg - Initialise the pad format config to default
@@ -618,8 +631,9 @@ static int vip_initialize_hw(struct vip_state *vip)
 	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, scale, &infinite_isp_vip->scale);
 	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, yuvconvformat, &infinite_isp_vip->yuvconvformat);
 	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, osd, &infinite_isp_vip->osd);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK, ~0U);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_STATUS, 0);
 	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 0);
-	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK, 0);
 
 	return 0;
 }
@@ -699,6 +713,7 @@ static int vip_probe(struct platform_device *pdev)
 	int ret;
 	static int debug_dir_index = 0;
 	struct resource *res;
+	u32 irq_source;
 
 	vip = devm_kzalloc(dev, sizeof(*vip), GFP_KERNEL);
 	if (!vip) {
@@ -716,6 +731,15 @@ static int vip_probe(struct platform_device *pdev)
 
 	vip->phys_addr = res->start;
 	dev_info(&pdev->dev, "VIP physical address: 0x%pa\n", &vip->phys_addr);
+	if (of_property_read_u32(dev->of_node, "xlnx,irq-source", &irq_source))
+		irq_source = (vip->phys_addr & 0xffff) == 0x4000 ?
+			XIL_ISP_IRQ_SOURCE_VIP1 : XIL_ISP_IRQ_SOURCE_VIP2;
+	if (irq_source != XIL_ISP_IRQ_SOURCE_VIP1 &&
+	    irq_source != XIL_ISP_IRQ_SOURCE_VIP2) {
+		dev_err(dev, "invalid IRQ dispatcher source %u", irq_source);
+		return -EINVAL;
+	}
+	vip->irq_source = irq_source;
 
 	vip->iomem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(vip->iomem)) {
@@ -748,6 +772,7 @@ static int vip_probe(struct platform_device *pdev)
 	strscpy(subdev->name, dev_name(dev), sizeof(subdev->name));
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
 	subdev->entity.ops = &vip_media_ops;
+	subdev->entity.function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
 	v4l2_set_subdevdata(subdev, vip);
 
 	ret = media_entity_pads_init(&subdev->entity, VIP_MEDIA_PADS,
@@ -758,11 +783,16 @@ static int vip_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, vip);
+	ret = xil_isp_irq_register(vip->irq_source, vip_irq_handler, vip);
+	if (ret) {
+		dev_err(dev, "failed to register VIP IRQ source: %d", ret);
+		goto err_media_cleanup;
+	}
 
 	ret = v4l2_async_register_subdev(subdev);
 	if (ret < 0) {
 		dev_err(dev, "failed to register subdev\n");
-		goto err_media_cleanup;
+		goto err_irq_unregister;
 	}
 
 	dev_info(dev, "xil-vip driver probed!");
@@ -777,6 +807,8 @@ static int vip_probe(struct platform_device *pdev)
 	}
 
 	return 0;
+err_irq_unregister:
+	xil_isp_irq_unregister(vip->irq_source, vip);
 err_media_cleanup:
 	media_entity_cleanup(&subdev->entity);
 err_mutex_destroy:
@@ -792,12 +824,23 @@ static int vip_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(vip->debug_dir);
 	vip->debug_dir = NULL;
 
-	v4l2_async_unregister_subdev(subdev);
-
 	mutex_lock(&vip->lock);
-	if (vip->streaming)
+	if (vip->streaming) {
 		vip_stop_stream(vip);
+	} else {
+		INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config,
+					   VIP_INT_MASK, ~0U);
+		INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config,
+					   VIP_INT_STATUS, 0);
+		if (vip->irq_source_enabled) {
+			xil_isp_irq_disable(vip->irq_source);
+			vip->irq_source_enabled = false;
+		}
+	}
 	mutex_unlock(&vip->lock);
+	xil_isp_irq_unregister(vip->irq_source, vip);
+
+	v4l2_async_unregister_subdev(subdev);
 
 	media_entity_cleanup(&subdev->entity);
 	mutex_destroy(&vip->lock);
