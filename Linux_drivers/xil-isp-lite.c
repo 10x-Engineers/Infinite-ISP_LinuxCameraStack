@@ -722,8 +722,12 @@ static void isp_stat_send_measurement(struct isp_stat_node *node, u32 irq_status
 	stat_result->frame_sequence = frame_sequence;
 	stat_result->irq_status = irq_status;
 	stat_result->timestamp_ns = timestamp;
+	/*
+	 * ae_response is a one-pixel-clock pulse and is almost always zero by
+	 * the time the frame IRQ runs. Export the latched decision instead.
+	 */
 	stat_result->ae_response = INFINITE_ISP_READ_REG(isp->isp_base, ae,
-							 ae_response);
+							 ae_response_debug);
 	stat_result->ae_skewness = INFINITE_ISP_READ_REG(isp->isp_base, ae,
 							 ae_result_skewness);
 	stat_result->ae_done = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_done);

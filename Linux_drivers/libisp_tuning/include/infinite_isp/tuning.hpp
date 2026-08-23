@@ -50,6 +50,7 @@ struct ControlUpdate {
 enum class AeMode {
     Hardware,
     Software,
+    Sensor,
 };
 
 struct TuningConfig {
@@ -59,6 +60,22 @@ struct TuningConfig {
     std::uint32_t max_dgain_index = 99;
     std::uint32_t dgain_step = 1;
     std::uint32_t decision_frames = 4;
+    std::uint32_t fixed_dgain_index = 0;
+};
+
+struct SensorAeConfig {
+    std::uint32_t min_analogue_gain = 0;
+    std::uint32_t max_analogue_gain = 232;
+    std::uint32_t initial_analogue_gain = 227;
+    std::uint32_t exposure = 1587;
+    std::uint32_t decision_frames = 10;
+};
+
+struct SensorControlUpdate {
+    std::optional<std::uint32_t> analogue_gain;
+    std::optional<std::uint32_t> exposure;
+
+    bool empty() const { return !analogue_gain && !exposure; }
 };
 
 /*
@@ -78,6 +95,27 @@ private:
     TuningConfig config_;
     AeResponse last_response_ = AeResponse::Hold;
     std::uint32_t response_frames_ = 0;
+};
+
+/*
+ * Sensor-side AE policy.  The ISP DGAIN is held at 1x and this controller
+ * turns the latched RTL AE decision into small IMX219 analogue-gain steps.
+ * It deliberately has no V4L2 dependency so it can move into a libcamera IPA.
+ */
+class SensorAeTuner {
+public:
+    explicit SensorAeTuner(SensorAeConfig config = {});
+
+    SensorControlUpdate initialControls() const;
+    SensorControlUpdate process(const FrameStatistics &statistics);
+    std::uint32_t currentAnalogueGain() const { return current_gain_; }
+    const SensorAeConfig &config() const { return config_; }
+
+private:
+    SensorAeConfig config_;
+    AeResponse last_response_ = AeResponse::Hold;
+    std::uint32_t response_frames_ = 0;
+    std::uint32_t current_gain_ = 0;
 };
 
 const char *toString(AeResponse response);

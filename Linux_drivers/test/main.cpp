@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -19,7 +20,59 @@ static std::atomic<uint64_t> g_sensor_frames{0};
 static std::atomic<uint64_t> g_ispin_frames{0};
 static std::atomic<uint64_t> g_ispout_frames{0};
 static std::atomic<uint64_t> g_tuning_frames{0};
+static std::atomic<uint32_t> g_latest_tuning_sequence{0};
+static std::atomic<uint32_t> g_latest_ae_response{2};
+static std::atomic<uint32_t> g_latest_ae_skewness{0};
+static std::atomic<uint32_t> g_latest_dgain_index{0};
+static std::atomic<uint32_t> g_latest_sensor_again{0};
 static void sigint_handler(int){ g_running = false; }
+
+static cv::Rect measurementRoiFromEnvironment(int width, int height) {
+    const cv::Rect fullFrame(0, 0, width, height);
+    const char *value = std::getenv("ISP_MEASURE_ROI");
+    if (!value)
+        return fullFrame;
+
+    int x = 0;
+    int y = 0;
+    int roiWidth = 0;
+    int roiHeight = 0;
+    if (std::sscanf(value, "%d,%d,%d,%d", &x, &y, &roiWidth,
+                    &roiHeight) != 4 || roiWidth <= 0 || roiHeight <= 0) {
+        std::cerr << "Invalid ISP_MEASURE_ROI='" << value
+                  << "'; expected x,y,width,height. Using full frame."
+                  << std::endl;
+        return fullFrame;
+    }
+
+    const cv::Rect requested(x, y, roiWidth, roiHeight);
+    const cv::Rect clipped = requested & fullFrame;
+    if (clipped.empty()) {
+        std::cerr << "ISP_MEASURE_ROI is outside the frame; using full frame."
+                  << std::endl;
+        return fullFrame;
+    }
+    return clipped;
+}
+
+static cv::Scalar sampledMeanBgr(const cv::Mat &bgr, const cv::Rect &roi,
+                                 int sampleStep = 8) {
+    std::uint64_t sums[3] = {};
+    std::uint64_t samples = 0;
+    for (int y = roi.y; y < roi.y + roi.height; y += sampleStep) {
+        const auto *row = bgr.ptr<std::uint8_t>(y);
+        for (int x = roi.x; x < roi.x + roi.width; x += sampleStep) {
+            const auto *pixel = row + 3 * x;
+            sums[0] += pixel[0];
+            sums[1] += pixel[1];
+            sums[2] += pixel[2];
+            ++samples;
+        }
+    }
+    return cv::Scalar(static_cast<double>(sums[0]) / samples,
+                      static_cast<double>(sums[1]) / samples,
+                      static_cast<double>(sums[2]) / samples);
+}
 
 static std::string findVideoNodeByName(const std::string &expectedName) {
     namespace fs = std::filesystem;
@@ -141,23 +194,45 @@ int setSubDevFmt() {
 static infinite_isp::TuningConfig tuningConfigFromEnvironment(bool &enabled) {
     infinite_isp::TuningConfig config;
     const std::string mode = std::getenv("ISP_TUNING_MODE")
-        ? std::getenv("ISP_TUNING_MODE") : "hardware";
+        ? std::getenv("ISP_TUNING_MODE") : "sensor-ae";
 
     enabled = mode != "off";
     if (mode == "software-ae") {
         config.ae_mode = infinite_isp::AeMode::Software;
+    } else if (mode == "sensor-ae") {
+        config.ae_mode = infinite_isp::AeMode::Sensor;
     } else if (mode != "hardware" && mode != "off") {
         std::cerr << "[Tuning] Unknown ISP_TUNING_MODE='" << mode
-                  << "', using hardware mode" << std::endl;
+                  << "', using sensor-ae mode" << std::endl;
+        config.ae_mode = infinite_isp::AeMode::Sensor;
     }
     return config;
 }
 
+static infinite_isp::SensorAeConfig sensorAeConfigFromEnvironment() {
+    infinite_isp::SensorAeConfig config;
+    if (const char *value = std::getenv("ISP_SENSOR_AGAIN"))
+        config.initial_analogue_gain = static_cast<std::uint32_t>(
+            std::max(0, std::atoi(value)));
+    if (const char *value = std::getenv("ISP_SENSOR_EXPOSURE"))
+        config.exposure = static_cast<std::uint32_t>(
+            std::max(4, std::atoi(value)));
+    if (const char *value = std::getenv("ISP_SENSOR_AE_FRAMES"))
+        config.decision_frames = static_cast<std::uint32_t>(
+            std::max(1, std::atoi(value)));
+    return config;
+}
+
 static void tuningThread(infinite_isp::V4L2Backend *backend,
-                         infinite_isp::AutoTuner *tuner) {
+                         infinite_isp::AutoTuner *tuner,
+                         infinite_isp::V4L2SensorBackend *sensorBackend,
+                         infinite_isp::SensorAeTuner *sensorTuner) {
     unsigned int print_interval = 0;
-    const char *mode = tuner->config().ae_mode == infinite_isp::AeMode::Hardware
-        ? "hardware AE/AWB" : "software AE + hardware AWB";
+    const char *mode = "software ISP AE + hardware AWB";
+    if (tuner->config().ae_mode == infinite_isp::AeMode::Hardware)
+        mode = "hardware AE/AWB";
+    else if (tuner->config().ae_mode == infinite_isp::AeMode::Sensor)
+        mode = "sensor AGAIN AE + hardware AWB";
     std::cout << "[Tuning] Metadata-driven thread started (" << mode << ")"
               << std::endl;
 
@@ -173,10 +248,30 @@ static void tuningThread(infinite_isp::V4L2Backend *backend,
         }
 
         g_tuning_frames.fetch_add(1, std::memory_order_relaxed);
+        g_latest_tuning_sequence.store(statistics.sequence,
+                                       std::memory_order_relaxed);
+        g_latest_ae_response.store(
+            static_cast<std::uint32_t>(statistics.ae_response),
+            std::memory_order_relaxed);
+        g_latest_ae_skewness.store(statistics.ae_skewness,
+                                   std::memory_order_relaxed);
+        g_latest_dgain_index.store(statistics.dgain_index,
+                                   std::memory_order_relaxed);
         const auto controls = tuner->process(statistics);
         if (!controls.empty() && !backend->apply(controls))
             std::cerr << "[Tuning] apply failed: " << backend->lastError()
                       << std::endl;
+
+        if (sensorTuner && sensorBackend) {
+            const auto sensorControls = sensorTuner->process(statistics);
+            if (!sensorControls.empty() &&
+                !sensorBackend->apply(sensorControls)) {
+                std::cerr << "[Tuning] sensor apply failed: "
+                          << sensorBackend->lastError() << std::endl;
+            }
+            g_latest_sensor_again.store(sensorTuner->currentAnalogueGain(),
+                                        std::memory_order_relaxed);
+        }
 
         if (++print_interval >= 30) {
             print_interval = 0;
@@ -186,7 +281,10 @@ static void tuningThread(infinite_isp::V4L2Backend *backend,
                       << " skew=" << statistics.ae_skewness
                       << " AWB(effective)=" << statistics.awb_r_gain
                       << "/" << statistics.awb_b_gain
-                      << " DGAIN=" << statistics.dgain_index
+                      << " DGAIN=" << statistics.dgain_index;
+            if (sensorTuner)
+                std::cout << " AGAIN=" << sensorTuner->currentAnalogueGain();
+            std::cout
                       << " dropped=" << statistics.dropped_frames << std::endl;
         }
     }
@@ -239,6 +337,8 @@ int ispPipelineRun() {
     const auto tuningConfig = tuningConfigFromEnvironment(tuningEnabled);
     std::unique_ptr<infinite_isp::AutoTuner> tuner;
     std::unique_ptr<infinite_isp::V4L2Backend> tuningBackend;
+    std::unique_ptr<infinite_isp::SensorAeTuner> sensorTuner;
+    std::unique_ptr<infinite_isp::V4L2SensorBackend> sensorBackend;
     std::thread tuning;
 
     if (tuningEnabled) {
@@ -255,16 +355,45 @@ int ispPipelineRun() {
                           << std::endl;
                 tuningBackend.reset();
                 tuner.reset();
-            } else if (!tuningBackend->apply(tuner->initialControls())) {
+            } else if (tuningConfig.ae_mode == infinite_isp::AeMode::Sensor) {
+                const std::string sensorDevice =
+                    findVideoNodeByName("xlnx-imx219 6-0010");
+                sensorTuner = std::make_unique<infinite_isp::SensorAeTuner>(
+                    sensorAeConfigFromEnvironment());
+                sensorBackend =
+                    std::make_unique<infinite_isp::V4L2SensorBackend>(
+                        sensorDevice);
+                if (sensorDevice.empty() || !sensorBackend->open() ||
+                    !sensorBackend->apply(sensorTuner->initialControls())) {
+                    std::cerr << "[Tuning] Sensor AE initialization failed: "
+                              << sensorBackend->lastError() << std::endl;
+                    sensorBackend.reset();
+                    sensorTuner.reset();
+                    tuningBackend.reset();
+                    tuner.reset();
+                } else {
+                    g_latest_sensor_again.store(
+                        sensorTuner->currentAnalogueGain(),
+                        std::memory_order_relaxed);
+                    std::cout << "[Tuning] Sensor control device: "
+                              << sensorDevice << std::endl;
+                }
+            }
+
+            if (tuningBackend &&
+                !tuningBackend->apply(tuner->initialControls())) {
                 std::cerr << "[Tuning] Initial controls failed: "
                           << tuningBackend->lastError() << std::endl;
+                sensorBackend.reset();
+                sensorTuner.reset();
                 tuningBackend.reset();
                 tuner.reset();
-            } else {
+            } else if (tuningBackend) {
                 std::cout << "[Tuning] Statistics/control device: "
                           << statDevice << std::endl;
                 tuning = std::thread(tuningThread, tuningBackend.get(),
-                                     tuner.get());
+                                     tuner.get(), sensorBackend.get(),
+                                     sensorTuner.get());
             }
         }
     } else {
@@ -319,6 +448,24 @@ int ispPipelineRun() {
         saveAfterFrames = std::max(1, std::atoi(value));
     const std::string capturePrefix = std::getenv("ISP_CAPTURE_PREFIX") ?
         std::getenv("ISP_CAPTURE_PREFIX") : "isp_capture";
+    const cv::Rect measureRoi = measurementRoiFromEnvironment(
+        cap2.frameWidth(), cap2.frameHeight());
+    std::ofstream measureCsv;
+    if (const char *value = std::getenv("ISP_MEASURE_CSV")) {
+        measureCsv.open(value);
+        if (!measureCsv) {
+            std::cerr << "Cannot open ISP_MEASURE_CSV='" << value << "'"
+                      << std::endl;
+        } else {
+            measureCsv << "frame,timestamp_us,mean_b,mean_g,mean_r,mean_y,"
+                          "roi_b,roi_g,roi_r,roi_y,tuning_seq,ae_response,"
+                          "ae_skewness,dgain_index,sensor_again\n";
+            std::cout << "[Measure] CSV: " << value << ", ROI="
+                      << measureRoi.x << ',' << measureRoi.y << ','
+                      << measureRoi.width << ',' << measureRoi.height
+                      << std::endl;
+        }
+    }
 
     /* cap2 display / headless capture */
     std::thread t2([&](){
@@ -329,10 +476,47 @@ int ispPipelineRun() {
             int idx = cap2.dequeue(500);
             if (idx >= 0) {
                 g_ispout_frames.fetch_add(1, std::memory_order_relaxed);
+                ++frameNumber;
                 cv::Mat bgr(cap2.frameHeight(), cap2.frameWidth(), CV_8UC3,
                                cap2.bufferPtr(idx), cap2.frameStride());
 
-                if (headless && ++frameNumber >= saveAfterFrames) {
+                if (measureCsv) {
+                    const cv::Scalar meanBgr = sampledMeanBgr(
+                        bgr, cv::Rect(0, 0, bgr.cols, bgr.rows));
+                    const cv::Scalar roiBgr = sampledMeanBgr(bgr, measureRoi);
+                    const double meanY = 0.114 * meanBgr[0] +
+                                         0.587 * meanBgr[1] +
+                                         0.299 * meanBgr[2];
+                    const double roiY = 0.114 * roiBgr[0] +
+                                        0.587 * roiBgr[1] +
+                                        0.299 * roiBgr[2];
+                    const auto timestampUs =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+                    measureCsv << frameNumber << ',' << timestampUs << ','
+                               << meanBgr[0] << ',' << meanBgr[1] << ','
+                               << meanBgr[2] << ',' << meanY << ','
+                               << roiBgr[0] << ',' << roiBgr[1] << ','
+                               << roiBgr[2] << ',' << roiY << ','
+                               << g_latest_tuning_sequence.load(
+                                      std::memory_order_relaxed)
+                               << ','
+                               << g_latest_ae_response.load(
+                                      std::memory_order_relaxed)
+                               << ','
+                               << g_latest_ae_skewness.load(
+                                      std::memory_order_relaxed)
+                               << ','
+                               << g_latest_dgain_index.load(
+                                      std::memory_order_relaxed)
+                               << ','
+                               << g_latest_sensor_again.load(
+                                      std::memory_order_relaxed)
+                               << '\n';
+                }
+
+                if (headless && frameNumber >= saveAfterFrames) {
                     cv::Mat swapped;
                     cv::cvtColor(bgr, swapped, cv::COLOR_RGB2BGR);
                     cv::imwrite(capturePrefix + "_bgr.png", bgr);
@@ -385,7 +569,7 @@ int ispPipelineRun() {
     if (tuning.joinable())
         tuning.join();
     if (tuningBackend) {
-        if (tuningConfig.ae_mode == infinite_isp::AeMode::Software) {
+        if (tuningConfig.ae_mode != infinite_isp::AeMode::Hardware) {
             infinite_isp::ControlUpdate restore;
             restore.auto_gain = true;
             if (!tuningBackend->apply(restore))

@@ -154,7 +154,8 @@ layout is declared in `linux/xil-isp-lite.h`; consumers must check both
 
 The statistics node and ISP subdevice expose standard V4L2 controls for
 `white_balance_automatic`, `gain_automatic`, `red_balance`, `blue_balance`, and
-`digital_gain`. The current RTL reports AE decisions as 0 normal, 1
+`digital_gain`. The statistics driver exports the latched RTL AE decision (the
+raw `ae_response` signal is only a one-pixel-clock pulse) as 0 normal, 1
 overexposed, 2 hold, and 3 underexposed. Hardware AWB gains already feed the
 effective WB path, so applications must not copy those gains back into the
 manual WB controls while automatic white balance is enabled.
@@ -231,7 +232,12 @@ stream, and runs tuning from frame statistics rather than polling private
 register payloads. Select a policy with `ISP_TUNING_MODE`:
 
 ```bash
-# Default: let RTL AE/AWB update the effective gains and observe statistics.
+# Default: hold ISP DGAIN at 1x and adjust IMX219 analogue gain from ISP AE
+# statistics. Hardware AWB remains enabled.
+ISP_TUNING_MODE=sensor-ae ./isp_pipeline
+
+# Legacy RTL loop. Its integer DGAIN table can visibly alternate between two
+# adjacent gain entries near the target brightness.
 ISP_TUNING_MODE=hardware ./isp_pipeline
 
 # User-space DGAIN loop driven by the RTL AE decision; hardware AWB remains on.
@@ -241,11 +247,37 @@ ISP_TUNING_MODE=software-ae ./isp_pipeline
 ISP_TUNING_MODE=off ./isp_pipeline
 ```
 
-`software-ae` disables hardware automatic gain while running and restores it
-on exit. `libisp_tuning/include/infinite_isp/tuning.hpp` contains the portable,
-V4L2-independent policy intended for later reuse by a libcamera IPA/backend;
+`sensor-ae` and `software-ae` disable hardware automatic ISP gain while running
+and restore it on exit. Sensor AE starts at IMX219 analogue-gain code 227,
+fixes exposure at 1587 lines (approximately 30.00 ms, aligned to 50 Hz
+lighting), and requires ten consistent ISP decisions before making a small
+adjustment. These values are tunable without rebuilding:
+
+```bash
+ISP_SENSOR_AGAIN=227 ISP_SENSOR_EXPOSURE=1587 \
+ISP_SENSOR_AE_FRAMES=10 ./isp_pipeline
+```
+
+The sensor gain value is the IMX219 V4L2 control code (range 0 to 232), not a
+linear multiplier. The ISP uses the central 80% of the 1992x1152 input for AE
+statistics so bright objects at the frame edge do not dominate metering.
+
+For headless tuning, the application can save the final frame and a lightweight
+per-output-frame CSV. The ROI coordinates use the 1920x1080 ISP output:
+
+```bash
+ISP_HEADLESS=1 ISP_CAPTURE_FRAME=300 \
+ISP_CAPTURE_PREFIX=/tmp/chart \
+ISP_MEASURE_CSV=/tmp/chart.csv \
+ISP_MEASURE_ROI=170,80,1450,850 ./isp_pipeline
+```
+
+Without `ISP_HEADLESS`, the application displays the live image in its OpenCV
+window. `libisp_tuning/include/infinite_isp/tuning.hpp` contains the portable,
+V4L2-independent policies intended for later reuse by a libcamera IPA/backend;
 `v4l2_backend.hpp` is the Linux transport and control adapter. Run the policy
-unit test from the build directory with `ctest --output-on-failure`.
+unit test from the build directory with `sudo ctest --output-on-failure` when
+the build directory was created as root.
 
 ## *How to Obtain Kernel Headers*
 

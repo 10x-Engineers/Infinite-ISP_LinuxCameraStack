@@ -7,6 +7,8 @@ using infinite_isp::AeMode;
 using infinite_isp::AeResponse;
 using infinite_isp::AutoTuner;
 using infinite_isp::FrameStatistics;
+using infinite_isp::SensorAeConfig;
+using infinite_isp::SensorAeTuner;
 using infinite_isp::TuningConfig;
 
 static FrameStatistics statistics(AeResponse response, std::uint32_t gain)
@@ -53,5 +55,35 @@ int main()
     FrameStatistics invalid = statistics(AeResponse::Underexposed, 5);
     invalid.flags = 0;
     assert(software.process(invalid).empty());
+
+    TuningConfig sensor_isp_config;
+    sensor_isp_config.ae_mode = AeMode::Sensor;
+    AutoTuner sensor_isp(sensor_isp_config);
+    const auto sensor_isp_controls = sensor_isp.initialControls();
+    assert(sensor_isp_controls.auto_gain == false);
+    assert(sensor_isp_controls.digital_gain == 0);
+
+    SensorAeConfig sensor_config;
+    sensor_config.initial_analogue_gain = 192;
+    sensor_config.decision_frames = 2;
+    SensorAeTuner sensor(sensor_config);
+    const auto sensor_initial = sensor.initialControls();
+    assert(sensor_initial.analogue_gain == 192);
+    assert(sensor_initial.exposure == 1587);
+
+    auto sensor_stats = statistics(AeResponse::Underexposed, 0);
+    sensor_stats.ae_skewness = 600;
+    assert(sensor.process(sensor_stats).empty());
+    auto sensor_update = sensor.process(sensor_stats);
+    assert(sensor_update.analogue_gain == 196);
+
+    sensor_stats.ae_response = AeResponse::Overexposed;
+    sensor_stats.ae_skewness = 200;
+    assert(sensor.process(sensor_stats).empty());
+    sensor_update = sensor.process(sensor_stats);
+    assert(sensor_update.analogue_gain == 195);
+
+    sensor_stats.ae_response = AeResponse::Normal;
+    assert(sensor.process(sensor_stats).empty());
     return 0;
 }

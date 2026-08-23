@@ -65,6 +65,22 @@ struct V4L2Backend::Impl {
     std::vector<Buffer> buffers;
 };
 
+struct V4L2SensorBackend::Impl {
+    explicit Impl(std::string path)
+        : device_path(std::move(path))
+    {
+    }
+
+    void setErrno(const char *operation)
+    {
+        error = std::string(operation) + ": " + std::strerror(errno);
+    }
+
+    std::string device_path;
+    std::string error;
+    int fd = -1;
+};
+
 V4L2Backend::V4L2Backend(std::string device_path)
     : impl_(std::make_unique<Impl>(std::move(device_path)))
 {
@@ -259,6 +275,74 @@ const std::string &V4L2Backend::devicePath() const
 }
 
 const std::string &V4L2Backend::lastError() const
+{
+    return impl_->error;
+}
+
+V4L2SensorBackend::V4L2SensorBackend(std::string device_path)
+    : impl_(std::make_unique<Impl>(std::move(device_path)))
+{
+}
+
+V4L2SensorBackend::~V4L2SensorBackend()
+{
+    close();
+}
+
+bool V4L2SensorBackend::open()
+{
+    if (impl_->fd >= 0)
+        return true;
+
+    impl_->error.clear();
+    impl_->fd = ::open(impl_->device_path.c_str(), O_RDWR | O_NONBLOCK);
+    if (impl_->fd < 0) {
+        impl_->setErrno("open sensor subdevice");
+        return false;
+    }
+    return true;
+}
+
+void V4L2SensorBackend::close()
+{
+    if (impl_->fd < 0)
+        return;
+    ::close(impl_->fd);
+    impl_->fd = -1;
+}
+
+bool V4L2SensorBackend::apply(const SensorControlUpdate &controls)
+{
+    if (impl_->fd < 0) {
+        impl_->error = "sensor subdevice is not open";
+        return false;
+    }
+    v4l2_control control{};
+    if (controls.exposure) {
+        control.id = V4L2_CID_EXPOSURE;
+        control.value = static_cast<std::int32_t>(*controls.exposure);
+        if (retryIoctl(impl_->fd, VIDIOC_S_CTRL, &control) < 0) {
+            impl_->setErrno("VIDIOC_S_CTRL exposure");
+            return false;
+        }
+    }
+    if (controls.analogue_gain) {
+        control.id = V4L2_CID_ANALOGUE_GAIN;
+        control.value = static_cast<std::int32_t>(*controls.analogue_gain);
+        if (retryIoctl(impl_->fd, VIDIOC_S_CTRL, &control) < 0) {
+            impl_->setErrno("VIDIOC_S_CTRL analogue gain");
+            return false;
+        }
+    }
+    return true;
+}
+
+const std::string &V4L2SensorBackend::devicePath() const
+{
+    return impl_->device_path;
+}
+
+const std::string &V4L2SensorBackend::lastError() const
 {
     return impl_->error;
 }

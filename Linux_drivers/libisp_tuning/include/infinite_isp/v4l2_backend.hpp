@@ -36,6 +36,26 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+class V4L2SensorBackend {
+public:
+    explicit V4L2SensorBackend(std::string device_path);
+    ~V4L2SensorBackend();
+
+    V4L2SensorBackend(const V4L2SensorBackend &) = delete;
+    V4L2SensorBackend &operator=(const V4L2SensorBackend &) = delete;
+
+    bool open();
+    void close();
+    bool apply(const SensorControlUpdate &controls);
+
+    const std::string &devicePath() const;
+    const std::string &lastError() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 std::string findStatDevice();
 
 } // namespace infinite_isp

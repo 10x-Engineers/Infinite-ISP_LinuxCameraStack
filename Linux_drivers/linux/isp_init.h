@@ -94,11 +94,16 @@ const unsigned int awb_frames = 1;
 
 // AE 
 const unsigned int center_illuminance = 110;
+/*
+ * Meter the central 80% so bright objects and logos at the frame edges do not
+ * dominate the AE statistic.  Keep the original RTL skewness threshold; the
+ * software sensor-AE loop applies hysteresis at the IMX219 control layer.
+ */
 const unsigned int histogram_skewnes = 192;
-const unsigned int ae_crop_left = 12;
-const unsigned int ae_crop_right = 12;
-const unsigned int ae_crop_top = 22;
-const unsigned int ae_crop_bottom = 2;
+const unsigned int ae_crop_left = 199;
+const unsigned int ae_crop_right = 199;
+const unsigned int ae_crop_top = 115;
+const unsigned int ae_crop_bottom = 115;
 
 // VIP 
 
