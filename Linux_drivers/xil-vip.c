@@ -684,6 +684,7 @@ static ssize_t offset_read(struct file *file, char __user *user_buf,
 }
 
 static const struct file_operations offset_fops = {
+    .owner = THIS_MODULE,
     .open = simple_open,
     .read = offset_read,
     .write = offset_write,
@@ -694,7 +695,7 @@ static int vip_probe(struct platform_device *pdev)
 	struct v4l2_subdev *subdev;
 	struct vip_state *vip;
 	struct device *dev = &pdev->dev;
-	int irq, ret;
+	int ret;
 	static int debug_dir_index = 0;
 	struct resource *res;
 
@@ -729,18 +730,19 @@ static int vip_probe(struct platform_device *pdev)
 	/* Initialize the default format */
 	ret = vip_get_hw_format(vip);
 	if (ret < 0) {
-		goto error;
+		goto err_mutex_destroy;
 	}
 
 	/* Initialize the vip hardware */
 	ret = vip_initialize_hw(vip);
 	if (ret < 0) {
-		goto error;
+		goto err_mutex_destroy;
 	}
 
 	/* Initialize V4L2 subdevice and media entity */
 	subdev = &vip->subdev;
 	v4l2_subdev_init(subdev, &vip_ops);
+	subdev->owner = THIS_MODULE;
 	subdev->dev = dev;
 	strscpy(subdev->name, dev_name(dev), sizeof(subdev->name));
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -751,7 +753,7 @@ static int vip_probe(struct platform_device *pdev)
 				     vip->pads);
 	if (ret < 0) {
 		dev_err(dev, "init media entity pads fail");
-		goto error;
+		goto err_mutex_destroy;
 	}
 
 	platform_set_drvdata(pdev, vip);
@@ -759,20 +761,24 @@ static int vip_probe(struct platform_device *pdev)
 	ret = v4l2_async_register_subdev(subdev);
 	if (ret < 0) {
 		dev_err(dev, "failed to register subdev\n");
-		goto error;
+		goto err_media_cleanup;
 	}
 
 	dev_info(dev, "xil-vip driver probed!");
 	snprintf(vip->dir_name, sizeof(vip->dir_name), "xil_isp_vip%d", debug_dir_index++);
-    vip->debug_dir = debugfs_create_dir(vip->dir_name, NULL);
-    if (!vip->debug_dir) {
-        dev_err(&pdev->dev, "Failed to create debugfs directory\n");
-    }
-	debugfs_create_file("reg_offset", 0644, vip->debug_dir, vip, &offset_fops);
+	vip->debug_dir = debugfs_create_dir(vip->dir_name, NULL);
+	if (IS_ERR_OR_NULL(vip->debug_dir)) {
+		dev_warn(dev, "failed to create debugfs directory\n");
+		vip->debug_dir = NULL;
+	} else {
+		debugfs_create_file("reg_offset", 0644, vip->debug_dir, vip,
+				    &offset_fops);
+	}
 
 	return 0;
-error:
+err_media_cleanup:
 	media_entity_cleanup(&subdev->entity);
+err_mutex_destroy:
 	mutex_destroy(&vip->lock);
 	return ret;
 }
@@ -782,7 +788,16 @@ static int vip_remove(struct platform_device *pdev)
 	struct vip_state *vip = platform_get_drvdata(pdev);
 	struct v4l2_subdev *subdev = &vip->subdev;
 
+	debugfs_remove_recursive(vip->debug_dir);
+	vip->debug_dir = NULL;
+
 	v4l2_async_unregister_subdev(subdev);
+
+	mutex_lock(&vip->lock);
+	if (vip->streaming)
+		vip_stop_stream(vip);
+	mutex_unlock(&vip->lock);
+
 	media_entity_cleanup(&subdev->entity);
 	mutex_destroy(&vip->lock);
 

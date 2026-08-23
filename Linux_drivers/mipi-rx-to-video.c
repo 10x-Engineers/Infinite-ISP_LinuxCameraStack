@@ -71,6 +71,7 @@ struct mipirx_state {
 	struct mutex lock;
 	struct media_pad pads[MIPI_RX_MEDIA_PADS];
 	bool streaming;
+	int irq;
 };
 
 static inline struct mipirx_state *
@@ -154,6 +155,7 @@ static int mipirx_start_stream(struct mipirx_state *mipirx)
 	mipirx_write(mipirx, MIPI_RX_REG_RESET, 0);
 
 	mipirx->streaming = true;
+	enable_irq(mipirx->irq);
 
 	return 0;
 }
@@ -164,6 +166,7 @@ static void mipirx_stop_stream(struct mipirx_state *mipirx)
 	mipirx_write(mipirx, MIPI_RX_REG_INT_MASK, ~0);
 	mipirx_write(mipirx, MIPI_RX_REG_INT_STATUS, 0);
 
+	disable_irq(mipirx->irq);
 	mipirx->streaming = false;
 }
 
@@ -478,12 +481,14 @@ static int mipirx_probe(struct platform_device *pdev)
 	}
 
 	ret = devm_request_threaded_irq(dev, irq, NULL,
-					mipirx_irq_handler, IRQF_ONESHOT,
+					mipirx_irq_handler,
+					IRQF_ONESHOT | IRQF_NO_AUTOEN,
 					dev_name(dev), mipirx);
 	if (ret) {
 		dev_err(dev, "Err = %d Interrupt handler reg failed!\n", ret);
 		return ret;
 	}
+	mipirx->irq = irq;
 
 	mipirx->aclk = devm_clk_get(dev, "s00_axi_aclk");
 	if (IS_ERR(mipirx->aclk)) {
@@ -518,6 +523,7 @@ static int mipirx_probe(struct platform_device *pdev)
 	/* Initialize V4L2 subdevice and media entity */
 	subdev = &mipirx->subdev;
 	v4l2_subdev_init(subdev, &mipirx_ops);
+	subdev->owner = THIS_MODULE;
 	subdev->dev = dev;
 	strscpy(subdev->name, dev_name(dev), sizeof(subdev->name));
 	subdev->flags |= V4L2_SUBDEV_FL_HAS_EVENTS | V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -555,6 +561,13 @@ static int mipirx_remove(struct platform_device *pdev)
 	struct v4l2_subdev *subdev = &mipirx->subdev;
 
 	v4l2_async_unregister_subdev(subdev);
+
+	mutex_lock(&mipirx->lock);
+	if (mipirx->streaming)
+		mipirx_stop_stream(mipirx);
+	mutex_unlock(&mipirx->lock);
+	synchronize_irq(mipirx->irq);
+
 	media_entity_cleanup(&subdev->entity);
 	mutex_destroy(&mipirx->lock);
 	clk_disable_unprepare(mipirx->aclk);

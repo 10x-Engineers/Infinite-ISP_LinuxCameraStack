@@ -464,6 +464,7 @@ static const struct v4l2_ioctl_ops isp_stat_ioctl = {
 };
 
 static const struct v4l2_file_operations isp_stat_fops = {
+	.owner = THIS_MODULE,
 	.mmap = vb2_fop_mmap,
 	.unlocked_ioctl = video_ioctl2,
 	.poll = vb2_fop_poll,
@@ -605,13 +606,15 @@ static int isp_stat_node_register(struct isp_state *isp, struct v4l2_device *v4l
 	vdev->queue = &node->queue;
 	vdev->device_caps = V4L2_CAP_META_CAPTURE | V4L2_CAP_STREAMING;
 	vdev->vfl_dir =  VFL_DIR_RX;
-	isp_stat_init_vb2_queue(node);
+	ret = isp_stat_init_vb2_queue(node);
+	if (ret)
+		goto err_mutex_destroy;
 	video_set_drvdata(vdev, node);
 
 	node->pad.flags = MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(&vdev->entity, 1, &node->pad);
 	if (ret)
-		goto err_mutex_destroy;
+		goto err_release_queue;
 
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret) {
@@ -624,6 +627,8 @@ static int isp_stat_node_register(struct isp_state *isp, struct v4l2_device *v4l
 
 err_cleanup_media_entity:
 	media_entity_cleanup(&vdev->entity);
+err_release_queue:
+	vb2_queue_release(&node->queue);
 err_mutex_destroy:
 	mutex_destroy(&node->vlock);
 	return ret;
@@ -693,7 +698,7 @@ static int isp_start_stream(struct isp_state *isp)
 static void isp_stop_stream(struct isp_state *isp)
 {
 	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, 0);
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
 	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
 
 	disable_irq(isp->irq);
@@ -1512,6 +1517,7 @@ static ssize_t offset_read(struct file *file, char __user *user_buf,
 }
 
 static const struct file_operations offset_fops = {
+	.owner = THIS_MODULE,
     .open = simple_open,
     .read = offset_read,
     .write = offset_write,
@@ -1519,6 +1525,7 @@ static const struct file_operations offset_fops = {
 };
 
 static const struct file_operations lut_offset_fops = {
+	.owner = THIS_MODULE,
     .open = simple_open,
     .read = offset_read,
     .write = vip_offset_write,
@@ -1568,7 +1575,8 @@ static int isp_probe(struct platform_device *pdev)
 	}
 
 	ret = devm_request_threaded_irq(dev, isp->irq, NULL,
-					isp_irq_handler, IRQF_ONESHOT,
+					isp_irq_handler,
+					IRQF_ONESHOT | IRQF_NO_AUTOEN,
 					dev_name(dev), isp);
 	if (ret) {
 		dev_err(dev, "Err = %d Interrupt handler reg failed!\n", ret);
@@ -1600,24 +1608,25 @@ static int isp_probe(struct platform_device *pdev)
 	/* Initialize the default format */
 	ret = isp_get_hw_format(isp);
 	if (ret < 0) {
-		goto error;
+		goto err_mutex_destroy;
 	}
 
 	/* Initialize the isp hardware */
 	ret = isp_initialize_hw(isp);
 	if (ret < 0) {
-		goto error;
+		goto err_mutex_destroy;
 	}
 
 	/* Initialize ctrl handler */
 	ret = isp_config_init_ctrl_handler(isp);
 	if (ret < 0) {
-		goto error;
+		goto err_mutex_destroy;
 	}
 
 	/* Initialize V4L2 subdevice and media entity */
 	subdev = &isp->subdev;
 	v4l2_subdev_init(subdev, &isp_ops);
+	subdev->owner = THIS_MODULE;
 	subdev->dev = dev;
 	subdev->internal_ops = &isp_internal_ops;
 	strscpy(subdev->name, dev_name(dev), sizeof(subdev->name));
@@ -1629,7 +1638,7 @@ static int isp_probe(struct platform_device *pdev)
 				     isp->pads);
 	if (ret < 0) {
 		dev_err(dev, "init media entity pads fail");
-		goto error;
+		goto err_ctrl_free;
 	}
 
 	platform_set_drvdata(pdev, isp);
@@ -1637,21 +1646,27 @@ static int isp_probe(struct platform_device *pdev)
 	ret = v4l2_async_register_subdev(subdev);
 	if (ret < 0) {
 		dev_err(dev, "failed to register subdev\n");
-		goto error;
+		goto err_media_cleanup;
 	}
 
-
-    isp->debug_dir = debugfs_create_dir("xil_isp", NULL);
-    if (!isp->debug_dir) {
-        dev_err(&pdev->dev, "Failed to create debugfs directory\n");
-    }
-	debugfs_create_file("reg_offset", 0644, isp->debug_dir, isp, &offset_fops);
-	debugfs_create_file("luts_reg_offset", 0644, isp->debug_dir, isp, &lut_offset_fops);
+	isp->debug_dir = debugfs_create_dir("xil_isp", NULL);
+	if (IS_ERR_OR_NULL(isp->debug_dir)) {
+		dev_warn(dev, "failed to create debugfs directory\n");
+		isp->debug_dir = NULL;
+	} else {
+		debugfs_create_file("reg_offset", 0644, isp->debug_dir, isp,
+				    &offset_fops);
+		debugfs_create_file("luts_reg_offset", 0644, isp->debug_dir, isp,
+				    &lut_offset_fops);
+	}
 	dev_info(dev, ISP_DRIVER_NAME " driver probed!");
 
 	return 0;
-error:
+err_media_cleanup:
 	media_entity_cleanup(&subdev->entity);
+err_ctrl_free:
+	v4l2_ctrl_handler_free(&isp->config_ctrls);
+err_mutex_destroy:
 	mutex_destroy(&isp->lock);
 	clk_bulk_disable_unprepare(num_clks, isp->clks);
 	return ret;
@@ -1663,14 +1678,25 @@ static int isp_remove(struct platform_device *pdev)
 	struct v4l2_subdev *subdev = &isp->subdev;
 	int num_clks = ARRAY_SIZE(isp_clks);
 
+	debugfs_remove_recursive(isp->debug_dir);
+	isp->debug_dir = NULL;
+
+	mutex_lock(&isp->lock);
+	if (isp->streaming) {
+		isp_stop_stream(isp);
+	} else {
+		INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 1);
+		INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~0U);
+		INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
+	}
+	mutex_unlock(&isp->lock);
+	synchronize_irq(isp->irq);
+
 	v4l2_async_unregister_subdev(subdev);
 	media_entity_cleanup(&subdev->entity);
+	v4l2_ctrl_handler_free(&isp->config_ctrls);
 	mutex_destroy(&isp->lock);
 	clk_bulk_disable_unprepare(num_clks, isp->clks);
-    if (isp->debug_dir) {
-        debugfs_remove_recursive(isp->debug_dir);
-        isp->debug_dir = NULL;
-    }
 
 	return 0;
 }

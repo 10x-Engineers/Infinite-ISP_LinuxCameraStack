@@ -58,13 +58,52 @@ If you're using a different kernel version, refer to [How to Obtain Kernel Heade
 To compile and install kernel modules (`.ko`) and device tree overlays (`.dtbo`):
 
 ```
-make -j8
-sudo make install
+sudo make -j8
+sudo make -j8 install
 ```
+
+Both the native driver build and installation are expected to run as root on
+the KV260 target.
 
 > ⚠️ On KV260, running `make install` as root on the **aarch64 target** will **remove all overlays** under `/sys/kernel/config/device-tree/overlays/`, effectively **unloading any preloaded bitstream** (typically loaded via DTBO). 
 >
 > Please ensure this behavior is acceptable in your workflow before proceeding.
+
+------
+
+## Reloading Kernel Modules Without Rebooting
+
+For driver-only changes, keep the FPGA image and device-tree overlay loaded and
+replace the kernel modules with:
+
+```bash
+cd Linux_drivers
+sudo make reload
+```
+
+Stop the test application and any process using `/dev/media*`, `/dev/video*`,
+or `/dev/v4l-subdev*` before running the command. The target checks for open
+device nodes and refuses to continue when the media pipeline is busy. Do not
+use forced module removal.
+
+The Xilinx 5.15 `xilinx-video` composite driver does not clear its saved
+subdevice pointers when an individual subdevice driver is unregistered. A
+direct `rmmod`/`insmod` cycle can therefore fail with `duplicate subdev` and
+leave the media graph incomplete. The `reload` target avoids this by:
+
+1. Building the kernel modules as root.
+2. Unbinding the two `xilinx-video` composite devices to destroy their V4L2
+   async graphs.
+3. Removing and reinserting the IMX219, AR1335, MIPI RX, VIP, and ISP modules.
+4. Binding the ISP graph first and the IMX219 capture graph second. This keeps
+   the ISP graph on `/dev/media0` and the capture graph on `/dev/media1`.
+5. Waiting for udev to recreate the media, video, and subdevice nodes.
+
+The media-bus formats are reset during reload. Reapply the `media-ctl` commands
+in the capture section below before restarting the test application. Verify the
+two media graphs and check `dmesg` after each cycle. If removal reports an oops,
+a hung task, or an incomplete graph, stop reloading and reboot the board to
+restore the default state.
 
 ------
 
