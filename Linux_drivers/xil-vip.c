@@ -276,7 +276,8 @@ static int vip_init_cfg(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static const u32 vip_src_pad_fmts[] = {MEDIA_BUS_FMT_UYVY8_1X16, MEDIA_BUS_FMT_VYYUYY8_1X24, MEDIA_BUS_FMT_RBG888_1X24};
+/* RGBC converts the ISP's YUV444 output to an RGB888 video bus. */
+static const u32 vip_src_pad_fmts[] = {MEDIA_BUS_FMT_RBG888_1X24};
 
 /*
  * vip_enum_mbus_code - Handle pixel format enumeration
@@ -515,7 +516,7 @@ static int vip_get_hw_format(struct vip_state *vip)
 		return -EINVAL;
 	}
 
-	dev_info(dev, "VIP HW formats. Resolution %u x %u, YUV%u",
+	dev_info(dev, "VIP HW formats. Resolution %u x %u, RGB%u",
 		width, height, bits);
 	
 	vip->bits = bits;
@@ -535,7 +536,7 @@ static int vip_get_hw_format(struct vip_state *vip)
 	format = &vip->pad_format[VIP_PAD_SOURCE];
 
 	*format = vip->pad_format[VIP_PAD_SINK];
-	format->code = MEDIA_BUS_FMT_UYVY8_1X16;
+	format->code = MEDIA_BUS_FMT_RBG888_1X24;
 
 	return 0;
 }
@@ -547,7 +548,7 @@ static void isp_vip_init(struct REG_Infinite_ISP_VIP* infinite_isp_vip)
 		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_RGBC_EN = 1;
 	}
 	if(IRC_EN){
-		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_IRC_EN = 0;
+		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_IRC_EN = 1;
 	}
 	if(SCALE_EN){
 		infinite_isp_vip->vip_config.VIP_TOP_EN.VIP_TOP_EN_SCALE_EN = 1;

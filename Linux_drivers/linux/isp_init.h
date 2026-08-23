@@ -24,7 +24,7 @@
 #define IRC_EN              1                   
 #define SCALE_EN            0                   
 #define OSD_EN              1
-#define YUV_CONV_FMT_EN     1                   
+#define YUV_CONV_FMT_EN     0
 
 // CROP 
 // No register setting required. Crop parameters were fixed at 2048x1536 in the design.
@@ -32,7 +32,7 @@
 // DPC 
 const unsigned int dp_threshold = 2;
 
-// BLC 
+// BLC
 const unsigned int r_offset = 41;
 const unsigned int gr_offset = 41;
 const unsigned int gb_offset = 41;
@@ -47,8 +47,8 @@ const unsigned int oecf_table[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 
 // DGAIN 
 const unsigned int gain_array[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100};
-const unsigned int current_gain = 20;
-const unsigned int DGAIN_isManual = 1;
+const unsigned int current_gain = 0;
+const unsigned int DGAIN_isManual = 0;  // 0 = HW AE auto-controls dgain
 
 // BNR 
 const unsigned int bnr_sk_r[] = {  0,  3,  7,  3,  0,  3, 43,105, 43,  3,  7,105,255,105,  7,  3, 43,105,  43,  3,  0,  3,  7,  3,  0};
@@ -61,7 +61,7 @@ const unsigned int bnr_cc_yg[] = {250,236,215,188,155,125, 97, 73, 51};
 const unsigned int bnr_cc_xb[] = { 32, 65, 98,130,163,196,229,261,294};
 const unsigned int bnr_cc_yb[] = {250,236,213,186,155,125, 96, 72, 51};
 
-// WB 
+// WB
 const unsigned int r_gain = 484;
 const unsigned int b_gain = 428;
 
@@ -106,8 +106,9 @@ const unsigned int ae_crop_bottom = 2;
 const unsigned int rgbc_conv_standard = 2;
 
 // IRC 
-const unsigned int height_start_idx = 228;
-const unsigned int width_start_idx = 64;
+/* Center 1920x1080 inside the Linux IMX219 mode (1992x1152). */
+const unsigned int height_start_idx = 36;
+const unsigned int width_start_idx = 36;
 
 // SCALE 
 // No register setting required. All parameters were fixed at 1920x1080 in the design.

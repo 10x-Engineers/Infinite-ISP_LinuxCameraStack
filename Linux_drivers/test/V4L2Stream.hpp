@@ -86,7 +86,15 @@ public:
         }
         width  = fmt.fmt.pix_mp.width;
         height = fmt.fmt.pix_mp.height;
+        pixelFormat = fmt.fmt.pix_mp.pixelformat;
         numPlanes = fmt.fmt.pix_mp.num_planes ? fmt.fmt.pix_mp.num_planes : 1;
+        bytesPerLine = fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
+        if (!bytesPerLine) {
+            const uint32_t bytesPerPixel =
+                (pixelFormat == V4L2_PIX_FMT_RGB24 ||
+                 pixelFormat == V4L2_PIX_FMT_BGR24) ? 3 : 2;
+            bytesPerLine = width * bytesPerPixel;
+        }
         return true;
     }
 
@@ -238,7 +246,7 @@ public:
     }
 
     int dequeue(int timeout_ms) {
-        struct pollfd pfd{fd, isOutput ? POLLOUT : POLLIN, 0};
+        struct pollfd pfd{fd, (short)(isOutput ? POLLOUT : POLLIN), 0};
         if (poll(&pfd, 1, timeout_ms) <= 0)
             return -1;
 
@@ -260,6 +268,9 @@ public:
 
     void* bufferPtr(int idx) { return buffers[idx].start; }
     size_t bufferLen(int idx){ return buffers[idx].length; }
+    uint32_t frameWidth() const { return width; }
+    uint32_t frameHeight() const { return height; }
+    uint32_t frameStride() const { return bytesPerLine; }
 
     std::vector<Buffer> buffers;
 
@@ -270,6 +281,8 @@ private:
     size_t reqCount;
     bool streaming{false};
     uint32_t width{0}, height{0};
+    uint32_t bytesPerLine{0};
+    uint32_t pixelFormat{0};
     unsigned numPlanes{1};
 };
 

@@ -146,27 +146,35 @@ struct xil_isp_lite_stat_awb_cfg {
 
 /* ISP statistics buffer define */
 
-#define V4L2_META_FMT_XIL_ISP_LITE_STAT		v4l2_fourcc('X', 'I', 'S', 'P') 
-#define XIL_ISP_LITE_AE_HIST_BIN_NUM		(256)
-#define XIL_ISP_LITE_AWB_HIST_BIN_NUM		(256)
+#define V4L2_META_FMT_XIL_ISP_LITE_STAT		v4l2_fourcc('X', 'I', 'S', 'P')
+
+/*
+ * Hardware AE/AWB statistics structure.
+ * NOTE: The current hardware (xil_isp_lite) does NOT provide per-channel
+ * histograms via AXI registers. It provides:
+ * - AE:  response [1:0] (0=underexposed, 1=proper, 2=overexposed),
+ *        skewness [15:0], done flag
+ * - AWB: final_r_gain [11:0], final_b_gain [11:0]
+ *
+ * The fields below expose what the hardware actually provides.
+ * Fields marked "not available from HW" are reserved for future use.
+ */
 
 struct xil_isp_lite_stat_ae_result {
-	__u64 pix_cnt;
-	__u64 sum;
-	__u32 hist_r[XIL_ISP_LITE_AE_HIST_BIN_NUM];
-	__u32 hist_gr[XIL_ISP_LITE_AE_HIST_BIN_NUM];
-	__u32 hist_gb[XIL_ISP_LITE_AE_HIST_BIN_NUM];
-	__u32 hist_b[XIL_ISP_LITE_AE_HIST_BIN_NUM];
+	__u64 timestamp_ns;         /* frame timestamp */
+	__u32 frame_sequence;       /* frame sequence number */
+	__u32 ae_response;          /* [1:0] 0=underexposed, 1=proper, 2=overexposed */
+	__u32 ae_skewness;          /* [15:0] histogram skewness metric */
+	__u32 ae_done;              /* 1 = AE computation complete this frame */
+	__u32 reserved[8];          /* padding for future expansion */
 };
 
 struct xil_isp_lite_stat_awb_result {
-	__u64 pix_cnt;
-	__u64 sum_r;
-	__u64 sum_g;
-	__u64 sum_b;
-	__u32 hist_r[XIL_ISP_LITE_AWB_HIST_BIN_NUM];
-	__u32 hist_g[XIL_ISP_LITE_AWB_HIST_BIN_NUM];
-	__u32 hist_b[XIL_ISP_LITE_AWB_HIST_BIN_NUM];
+	__u64 timestamp_ns;         /* frame timestamp */
+	__u32 frame_sequence;       /* frame sequence number */
+	__u32 final_r_gain;         /* [11:0] AWB computed R gain */
+	__u32 final_b_gain;         /* [11:0] AWB computed B gain */
+	__u32 reserved[8];          /* padding for future expansion */
 };
 
 struct xil_isp_lite_stat_result {

@@ -552,6 +552,21 @@ static int isp_stat_init_vb2_queue(struct isp_stat_node *node)
 	return vb2_queue_init(q);
 }
 
+static void isp_get_stat_ae_result(struct isp_state *isp,
+				    struct xil_isp_lite_stat_ae_result *result)
+{
+	result->ae_response = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_response);
+	result->ae_skewness = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_result_skewness);
+	result->ae_done     = INFINITE_ISP_READ_REG(isp->isp_base, ae, ae_done);
+}
+
+static void isp_get_stat_awb_result(struct isp_state *isp,
+				     struct xil_isp_lite_stat_awb_result *result)
+{
+	result->final_r_gain = INFINITE_ISP_READ_REG(isp->isp_base, awb, FINAL_RGAIN);
+	result->final_b_gain = INFINITE_ISP_READ_REG(isp->isp_base, awb, FINAL_BGAIN);
+}
+
 static void isp_stat_send_measurement(struct isp_stat_node *node)
 {
 	struct isp_state *isp = container_of(node, struct isp_state, stat_node);
@@ -571,13 +586,28 @@ static void isp_stat_send_measurement(struct isp_stat_node *node)
 		struct xil_isp_lite_stat_result *stat_result = NULL;
 		stat_result = (struct xil_isp_lite_stat_result *)vb2_plane_vaddr(&buffer->vb.vb2_buf, 0);
 
-		// isp_get_stat_ae_result(isp, &stat_result->ae);
-		// isp_get_stat_awb_result(isp, &stat_result->awb);
+		memset(stat_result, 0, sizeof(*stat_result));
+
+		isp_get_stat_ae_result(isp, &stat_result->ae);
+		isp_get_stat_awb_result(isp, &stat_result->awb);
+
+		stat_result->ae.timestamp_ns = timestamp;
+		stat_result->ae.frame_sequence = frame_sequence;
+		stat_result->awb.timestamp_ns = timestamp;
+		stat_result->awb.frame_sequence = frame_sequence;
 
 		vb2_set_plane_payload(&buffer->vb.vb2_buf, 0, sizeof(struct xil_isp_lite_stat_result));
 		buffer->vb.sequence = frame_sequence;
 		buffer->vb.vb2_buf.timestamp = timestamp;
 		vb2_buffer_done(&buffer->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		dev_info_ratelimited(isp->dev,
+			"ISP stat sent: frame=%u ae_resp=%u ae_skew=%u ae_done=%u r_gain=%u b_gain=%u",
+			frame_sequence,
+			stat_result->ae.ae_response,
+			stat_result->ae.ae_skewness,
+			stat_result->ae.ae_done,
+			stat_result->awb.final_r_gain,
+			stat_result->awb.final_b_gain);
 	}
 
 	spin_unlock(&node->lock);
@@ -683,7 +713,15 @@ static int isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 static int isp_start_stream(struct isp_state *isp)
 {
 	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_STATUS, 0);
-	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK, ~(ISP_REG_INT_MASK_BIT_FRAME_START|ISP_REG_INT_MASK_BIT_FRAME_DONE));
+	/*
+	 * Enable interrupts for: FRAME_START, FRAME_DONE, AE_DONE.
+	 * AWB_DONE is not connected in current hardware.
+	 * Writing 0 to a mask bit enables the interrupt (active-low mask).
+	 */
+	INFINITE_ISP_WRITE_REG(isp->isp_base, config, INT_MASK,
+		~(ISP_REG_INT_MASK_BIT_FRAME_START |
+		  ISP_REG_INT_MASK_BIT_FRAME_DONE  |
+		  ISP_REG_INT_MASK_BIT_AE_DONE));
 	INFINITE_ISP_WRITE_REG(isp->isp_base, config, RESET, 0);
 
 	isp->frame_sequence = 0;
@@ -719,7 +757,7 @@ static void isp_queue_event_frame_sync(struct isp_state *isp, u32 frame_seq)
 static irqreturn_t isp_irq_handler(int irq, void *data)
 {
 	struct isp_state *isp = (struct isp_state *)data;
-	//struct device *dev = isp->dev;
+	struct device *dev = isp->dev;
 	u32 status, done_mask;
 
 	status = INFINITE_ISP_READ_REG(isp->isp_base, config, INT_STATUS);
@@ -728,25 +766,31 @@ static irqreturn_t isp_irq_handler(int irq, void *data)
 	if (!status) {
 		return IRQ_NONE;
 	}
-	pr_info("IRQ status %08X", status);
 
-	// if (status & ISP_REG_INT_STATUS_BIT_FRAME_START) {
-	// 	//dev_info(dev, "IRQ FRAME_START");
-	// 	isp_queue_event_frame_sync(isp, isp->frame_sequence);
-	// 	isp->int_status = ISP_REG_INT_STATUS_BIT_FRAME_START;
-	// 	return IRQ_HANDLED;
-	// }
+	dev_info_ratelimited(dev, "ISP IRQ status 0x%08X", status);
 
-	// isp->int_status |= status;
-	// done_mask  = ISP_REG_INT_STATUS_BIT_FRAME_START | ISP_REG_INT_STATUS_BIT_FRAME_DONE;
-	// //done_mask |= ISP_REG_INT_STATUS_BIT_AE_DONE | ISP_REG_INT_STATUS_BIT_AWB_DONE;
+	if (status & ISP_REG_INT_STATUS_BIT_FRAME_START) {
+		isp_queue_event_frame_sync(isp, isp->frame_sequence);
+	}
 
-	// if ((isp->int_status & done_mask) == done_mask) {
-	// 	//dev_info(dev, "Statistics done");
-	// 	isp_stat_send_measurement(&isp->stat_node);
-	// 	isp->frame_sequence ++;
-	// 	isp->int_status = 0;
-	// }
+	isp->int_status |= status;
+
+	/*
+	 * We expect FRAME_START followed by FRAME_DONE and AE_DONE.
+	 * Note: AWB_DONE is not connected in current hardware
+	 * (int_awb_done is commented out in the AXI wrapper HDL).
+	 * AWB gains update continuously and don't generate an interrupt.
+	 */
+	done_mask  = ISP_REG_INT_STATUS_BIT_FRAME_START;
+	done_mask |= ISP_REG_INT_STATUS_BIT_FRAME_DONE;
+	done_mask |= ISP_REG_INT_STATUS_BIT_AE_DONE;
+	/* AWB_DONE never fires — exclude it */
+
+	if ((isp->int_status & done_mask) == done_mask) {
+		isp_stat_send_measurement(&isp->stat_node);
+		isp->frame_sequence++;
+		isp->int_status = 0;
+	}
 
 	return IRQ_HANDLED;
 }
@@ -1005,19 +1049,12 @@ static int isp_get_hw_format(struct isp_state *isp)
 
 	format = &isp->pad_format[ISP_PAD_SOURCE];
 	*format = isp->pad_format[ISP_PAD_SINK];
-	switch (bits) {
-		case 8:   format->code = MEDIA_BUS_FMT_YUV8_1X24;  break;
-		case 10:  format->code = MEDIA_BUS_FMT_YUV10_1X30; break;
-		default:  format->code = MEDIA_BUS_FMT_YUV12_1X36; break;
-	}
+	/* The ISP core exports fixed 8-bit Y, U and V channels to each VIP. */
+	format->code = MEDIA_BUS_FMT_YUV8_1X24;
 #if ISP_MEDIA_PADS > 2
 	format = &isp->pad_format[ISP_PAD_SOURCE_2];
 	*format = isp->pad_format[ISP_PAD_SINK];
-	switch (bits) {
-		case 8:   format->code = MEDIA_BUS_FMT_YUV8_1X24;  break;
-		case 10:  format->code = MEDIA_BUS_FMT_YUV10_1X30; break;
-		default:  format->code = MEDIA_BUS_FMT_YUV12_1X36; break;
-	}
+	format->code = MEDIA_BUS_FMT_YUV8_1X24;
 #endif
 
 	return 0;
