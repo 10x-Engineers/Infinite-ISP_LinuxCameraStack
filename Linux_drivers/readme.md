@@ -208,24 +208,74 @@ This will:
 
 ---
 
-## ISP Pipeline Test Application (OpenCV)
-A C++ test application based on OpenCV has been implemented. This application supports continuous frame acquisition from the ISP output and validates the complete user-space data path.
+## ISP Pipeline Test Application
+A C++ test application has been implemented. It supports continuous frame
+acquisition from the ISP output, metadata-driven tuning, headless image capture,
+and either a low-overhead GStreamer preview or an OpenCV compatibility preview.
+
+### Quick Demo on KV260
+
+With the drivers and overlay already installed, the shortest path to the live
+demo is:
+
+```sh
+cd Linux_drivers
+make setup-media
+sudo cmake -S test -B test/build
+sudo cmake --build test/build -j8
+DISPLAY=:0 ./test/build/isp_pipeline
+```
+
+Run the build as root because the shared build tree can contain root-owned
+artifacts; run `isp_pipeline` as the desktop `ubuntu` user. The default demo
+opens a resizable 960x540 Mali-400 zero-copy preview at 30 FPS, enables
+latest-frame low-latency display, and uses sensor analogue gain for AE with
+hardware AWB. Press `Ctrl+C` or close the window to stop it.
+
+If this is a fresh board rather than an already installed system, first install
+the dependencies below and follow the driver/overlay installation section
+above. After every `sudo make reload`, rerun `make setup-media` because media
+formats are reset when the graph is recreated.
+
+### Common Scenarios
+
+Run these commands from `Linux_drivers` after `make setup-media`:
+
+```bash
+# Stable image/color baseline without automatic tuning.
+DISPLAY=:0 ISP_TUNING_MODE=off ./test/build/isp_pipeline
+
+# Headless capture after 150 ISP output frames.
+ISP_HEADLESS=1 ISP_CAPTURE_FRAME=150 \
+ISP_CAPTURE_PREFIX=/tmp/isp-frame ./test/build/isp_pipeline
+
+# Record image/tuning statistics for about six seconds, using a central ROI.
+ISP_HEADLESS=1 ISP_CAPTURE_FRAME=300 \
+ISP_MEASURE_CSV=/tmp/isp-tuning.csv \
+ISP_MEASURE_ROI=240,135,1440,810 \
+ISP_CAPTURE_PREFIX=/tmp/isp-measure ./test/build/isp_pipeline
+
+# Compare the compatibility display backends.
+DISPLAY=:0 ISP_DISPLAY_BACKEND=gstreamer ./test/build/isp_pipeline
+DISPLAY=:0 ISP_DISPLAY_BACKEND=opencv ./test/build/isp_pipeline
+```
+
+The headless commands create PNG/RAW files with the selected prefix. The CSV
+scenario records BGR/luma measurements together with AE, AWB-related metadata,
+DGAIN, and sensor analogue gain. Mali display, tuning overrides, low-rate
+preview, framebuffer capture, and CCM examples are documented in the detailed
+sections below.
 
 ### Build Dependencies
+
 ```sh
 sudo apt update
-sudo apt install libopencv-dev
+sudo apt install libopencv-dev libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev gstreamer1.0-x \
+    libegl1-mesa-dev libgles2-mesa-dev libx11-dev libdrm-dev
 ```
 
-### Build and Run
-```sh
-cd Linux_drivers/test
-mkdir build
-cd build
-sudo cmake ..
-sudo cmake --build . -j8
-./isp_pipeline
-```
+### Tuning Modes and Controls
 
 The test application builds and links `libisp_tuning`, starts the XISP metadata
 stream, and runs tuning from frame statistics rather than polling private
@@ -234,17 +284,17 @@ register payloads. Select a policy with `ISP_TUNING_MODE`:
 ```bash
 # Default: hold ISP DGAIN at 1x and adjust IMX219 analogue gain from ISP AE
 # statistics. Hardware AWB remains enabled.
-ISP_TUNING_MODE=sensor-ae ./isp_pipeline
+ISP_TUNING_MODE=sensor-ae ./test/build/isp_pipeline
 
 # Legacy RTL loop. Its integer DGAIN table can visibly alternate between two
 # adjacent gain entries near the target brightness.
-ISP_TUNING_MODE=hardware ./isp_pipeline
+ISP_TUNING_MODE=hardware ./test/build/isp_pipeline
 
 # User-space DGAIN loop driven by the RTL AE decision; hardware AWB remains on.
-ISP_TUNING_MODE=software-ae ./isp_pipeline
+ISP_TUNING_MODE=software-ae ./test/build/isp_pipeline
 
 # Image pipeline only.
-ISP_TUNING_MODE=off ./isp_pipeline
+ISP_TUNING_MODE=off ./test/build/isp_pipeline
 ```
 
 `sensor-ae` and `software-ae` disable hardware automatic ISP gain while running
@@ -255,12 +305,168 @@ adjustment. These values are tunable without rebuilding:
 
 ```bash
 ISP_SENSOR_AGAIN=227 ISP_SENSOR_EXPOSURE=1587 \
-ISP_SENSOR_AE_FRAMES=10 ./isp_pipeline
+ISP_SENSOR_AE_FRAMES=10 ./test/build/isp_pipeline
 ```
 
 The sensor gain value is the IMX219 V4L2 control code (range 0 to 232), not a
 linear multiplier. The ISP uses the central 80% of the 1992x1152 input for AE
 statistics so bright objects at the frame edge do not dominate metering.
+
+### IMX219 frame rate
+
+The 1992x1152 cropped mode now uses VTS 1763 instead of 3526. With the
+182.4 MHz pixel rate and 3448-pixel line length this produces 30 FPS; the V4L2
+vertical-blanking control reads 611 lines. The default 1587-line exposure still
+fits below the 1759-line limit and remains approximately 30 ms for 50 Hz
+anti-flicker operation.
+
+After rebuilding and reloading the sensor module, the capture node can be
+checked independently of the ISP:
+
+```bash
+v4l2-ctl -d /dev/video4 --stream-mmap=4 --stream-count=300 \
+    --stream-to=/dev/null --stream-poll
+```
+
+The independent capture test measured 30.01 FPS. The application keeps four
+DMABUFs in flight rather than waiting synchronously for each buffer. A board
+run with this four-buffer setting held `sensor` and `ispin` at 30 FPS, ISP
+output and tuning at 48-49 FPS, display at 30 FPS, and zero metadata drops.
+
+### Live display and CPU load
+
+When EGL/GLES2/X11 development files are available, the default live preview is
+the custom `mali` backend at 960x540@30 FPS. The output path is genuinely
+zero-copy: the VIP owns four MMAP buffers, exports each as a DMA-BUF, and Mali
+samples those same buffers through EGLImages. `EGL_KHR_fence_sync` prevents a
+buffer from being queued back to VIP until its GLES draw has completed.
+
+The ARM r9p0 library cannot import `DRM_FORMAT_RGB888` or
+`DRM_FORMAT_BGR888`. The FPGA framebuffer writer also cannot be switched to a
+32-bit format in software: its generated hardware has `HAS_BGRX8=0` and
+`HAS_RGBX8=0`, so adding `xrgb8888` only to `xlnx,vid-formats` is invalid and
+produces `Framebuffer not configured for fourcc 0x34325258` in `dmesg`.
+
+The working path keeps the native tightly packed BGR24 stream. Each line is
+viewed as three 960x1080 RGB565 EGLImages with offsets 0, 1920, and 3840 bytes
+and a common 5760-byte pitch. In the fragment shader, three RGB565 words are
+losslessly unpacked back into every two BGR24 pixels before scaling. Splitting
+the view three ways keeps texture indices within the Mali-400 fragment
+shader's mediump precision range; one 2880-pixel packed view causes vertical
+color stripes.
+
+The Mali path continuously drains the roughly 49 FPS ISP output and displays
+only the newest completed buffer at each display deadline. Older or duplicate
+buffers are immediately returned to V4L2 instead of being replayed through a
+slow FIFO. The FPS monitor reports the output-completion-to-swap age as
+`display-age` and counts discarded old buffers as `stale-skipped`. On the board,
+the former 15 FPS FIFO averaged about 302 ms of display age; at the same 15 FPS,
+latest-frame mode averaged 0.8 ms with a 1.1 ms measured maximum. At the default
+30 FPS it averaged 3-8 ms with a maximum below 24 ms, while sensor/ispin
+remained 30 FPS, tuning remained 48-49 FPS, and metadata drops remained zero.
+The complete process used about 3.4% instantaneous CPU.
+A GPU readback of the final 960x540 shader output verified image orientation
+and RGB channel order. The earlier
+GStreamer/NEON backend used about 56% of one core and displayed 12-13 FPS; the
+original full-resolution OpenCV path used about 207%.
+
+Desktop GLX still reports Mesa `llvmpipe`; Mali acceleration is available only
+through ARM EGL 1.4/OpenGL ES 2.0. The viewer therefore selects an EGL config
+matching the desktop's 16-bit root visual. Do not substitute `glimagesink`: its
+default GLX path is software-rendered, and its forced EGL path selects an
+incompatible X11 visual.
+
+Display settings and the compatibility backend are selectable without a
+rebuild:
+
+```bash
+# Default Mali zero-copy, latest-frame preview, 960x540@30.
+DISPLAY=:0 ./test/build/isp_pipeline
+
+# Reduce the preview rate if desired; low-latency mode still drops stale frames.
+DISPLAY=:0 ISP_DISPLAY_FPS=15 ./test/build/isp_pipeline
+
+# Restore FIFO playback only for A/B diagnosis. This adds about 300 ms of
+# measured display-queue latency at 15 FPS and should not be used normally.
+DISPLAY=:0 ISP_DISPLAY_FPS=15 ISP_MALI_LOW_LATENCY=0 \
+./test/build/isp_pipeline
+
+# Change the initial GPU output window size. Resizing or maximizing the X11
+# window updates the GLES viewport dynamically and fills the new client area.
+DISPLAY=:0 ISP_DISPLAY_WIDTH=960 ./test/build/isp_pipeline
+
+# X11 vsync is enabled by default to prevent horizontal tearing during motion.
+# Disable it only for driver/performance diagnosis.
+DISPLAY=:0 ISP_MALI_VSYNC=0 ./test/build/isp_pipeline
+
+# One-shot debug capture of the final GLES framebuffer.
+DISPLAY=:0 ISP_MALI_CAPTURE_PPM=/tmp/mali-preview.ppm \
+./test/build/isp_pipeline
+
+# Retain compatibility backends for comparison and CPU image measurement.
+DISPLAY=:0 ISP_DISPLAY_BACKEND=gstreamer ./test/build/isp_pipeline
+DISPLAY=:0 ISP_DISPLAY_BACKEND=opencv ISP_OPENCV_THREADS=4 \
+./test/build/isp_pipeline
+```
+
+If Mali build dependencies are missing, CMake omits this backend and the program
+falls back to GStreamer or OpenCV. OpenCV HighGUI is already built with GTK3,
+so direct GTK does not remove the BGR24 scaling and 16-bit X11 conversion.
+`ISP_MEASURE_CSV` requires `gstreamer`, `opencv`, or headless mode because the
+Mali loop deliberately performs no CPU image reads. Headless capture is
+unchanged.
+
+### ColorChecker CCM tuning
+
+The default CCM is a signed Q10 matrix fitted from the 24-patch Aurora chart
+under the current board test lighting. Hardware AWB remains enabled so it can
+adapt the WB stage to the illuminant; CCM is responsible for sensor color
+cross-talk and saturation:
+
+```text
+ 2804  -1357   -424
+ -648   2163   -490
+ -320  -1414   2747
+```
+
+The matrix rows remain approximately unity-sum, which keeps neutral input
+neutral and prevents CCM from changing the AE target. The initial regularized
+fit reduced the mean luminance-matched Delta-E 76 of the 18 chromatic patches
+from 16.57 to 11.08 in its same-pose comparison. An unconstrained fit reached
+9.95 but clipped the yellow patch's blue channel to zero, so it was rejected.
+
+After the chart was moved and relit, a second same-pose A/B pass found excess
+green and blue in the saturated red patch. The final matrix above changes only
+the green and blue rows by opposite off-diagonal/diagonal amounts, preserving
+their row sums. The red patch changed from RGB 169/58/67 to 171/53/61 and its
+luminance-matched Delta-E 76 fell from 5.64 to 1.49. Its G/R ratio changed from
+0.343 to 0.310 (reference 0.309), while the 18-patch mean improved from 8.53 to
+8.15. The comparison used the classic ColorChecker sRGB patch values; an
+Aurora clone and non-uniform room lighting are not a spectrophotometric
+reference, so this matrix is a board-specific starting point rather than a
+universal profile.
+
+Candidate matrices can be tested without rebuilding or reloading the driver.
+Pass all nine signed Q10 coefficients in row-major order:
+
+```bash
+ISP_CCM='2804,-1357,-424,-648,2163,-490,-320,-1414,2747' \
+ISP_HEADLESS=1 ISP_CAPTURE_FRAME=150 \
+ISP_CAPTURE_PREFIX=/tmp/chart ./test/build/isp_pipeline
+```
+
+For controlled WB experiments, disable hardware AWB by supplying both manual
+gains. Supplying only one is rejected:
+
+```bash
+ISP_WB_R_GAIN=425 ISP_WB_B_GAIN=355 ./test/build/isp_pipeline
+```
+
+The manual-WB trial did not improve this chart under the current non-uniform
+lighting, so normal operation should omit both variables. V4L2 controls retain
+their last value until another application changes them or the module is
+reloaded. Use flat, diffuse illumination, avoid glare, fill most of the frame,
+and let sensor AE settle before comparing CCM candidates.
 
 For headless tuning, the application can save the final frame and a lightweight
 per-output-frame CSV. The ROI coordinates use the 1920x1080 ISP output:
@@ -269,11 +475,11 @@ per-output-frame CSV. The ROI coordinates use the 1920x1080 ISP output:
 ISP_HEADLESS=1 ISP_CAPTURE_FRAME=300 \
 ISP_CAPTURE_PREFIX=/tmp/chart \
 ISP_MEASURE_CSV=/tmp/chart.csv \
-ISP_MEASURE_ROI=170,80,1450,850 ./isp_pipeline
+ISP_MEASURE_ROI=170,80,1450,850 ./test/build/isp_pipeline
 ```
 
-Without `ISP_HEADLESS`, the application displays the live image in its OpenCV
-window. `libisp_tuning/include/infinite_isp/tuning.hpp` contains the portable,
+Without `ISP_HEADLESS`, the application displays the live image using the
+GStreamer backend described above. `libisp_tuning/include/infinite_isp/tuning.hpp` contains the portable,
 V4L2-independent policies intended for later reuse by a libcamera IPA/backend;
 `v4l2_backend.hpp` is the Linux transport and control adapter. Run the policy
 unit test from the build directory with `sudo ctest --output-on-failure` when

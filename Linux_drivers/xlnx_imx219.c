@@ -50,6 +50,7 @@
 /* V_TIMING internal */
 #define IMX219_REG_VTS			0x0160
 #define IMX219_VTS_15FPS		0x0dc6
+#define IMX219_VTS_30FPS_1992x1152	0x06e3
 #define IMX219_VTS_30FPS_1080P		0x06e3
 #define IMX219_VTS_30FPS_BINNED		0x06e3
 #define IMX219_VTS_30FPS_640x480	0x06e3
@@ -403,7 +404,7 @@ static const struct imx219_mode supported_modes[] = {
 		.binning = false,
 	},
 	{
-		/* 1992*1152 15fps mode */
+		/* 1992x1152 30fps cropped mode */
 		.width = 1992,
 		.height = 1152,
 		.crop = {
@@ -412,7 +413,7 @@ static const struct imx219_mode supported_modes[] = {
 			.width = 1992,
 			.height = 1152
 		},
-		.vts_def = IMX219_VTS_15FPS,
+		.vts_def = IMX219_VTS_30FPS_1992x1152,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_1992x1152_regs),
 			.regs = mode_1992x1152_regs,

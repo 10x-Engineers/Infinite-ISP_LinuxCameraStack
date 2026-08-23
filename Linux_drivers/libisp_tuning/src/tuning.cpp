@@ -8,7 +8,7 @@ namespace infinite_isp {
 bool ControlUpdate::empty() const
 {
     return !auto_white_balance && !auto_gain && !red_balance &&
-           !blue_balance && !digital_gain;
+           !blue_balance && !digital_gain && !color_correction_matrix;
 }
 
 AutoTuner::AutoTuner(TuningConfig config)
@@ -24,9 +24,14 @@ ControlUpdate AutoTuner::initialControls() const
 {
     ControlUpdate controls;
     controls.auto_white_balance = config_.hardware_awb;
+    if (!config_.hardware_awb) {
+        controls.red_balance = config_.manual_wb_r_gain;
+        controls.blue_balance = config_.manual_wb_b_gain;
+    }
     controls.auto_gain = config_.ae_mode == AeMode::Hardware;
     if (config_.ae_mode == AeMode::Sensor)
         controls.digital_gain = config_.fixed_dgain_index;
+    controls.color_correction_matrix = config_.color_correction_matrix;
     return controls;
 }
 

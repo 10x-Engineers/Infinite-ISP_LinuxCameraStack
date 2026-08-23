@@ -144,6 +144,16 @@ reload: check_root check_arch modules
 	@command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 || true
 	@echo "Modules reloaded; reapply the media-ctl formats before testing"
 
+# Configure the verified IMX219 -> ISP -> BGR24 graph used by the demo.
+setup-media:
+	media-ctl -d /dev/media1 --set-v4l2 '"xlnx-imx219 6-0010":0[fmt:SRGGB10_1X10/1992x1152 field:none]'
+	media-ctl -d /dev/media1 --set-v4l2 '"a0030000.mipi_rx_to_video":0[fmt:SRGGB10_1X10/1992x1152 field:none]'
+	media-ctl -d /dev/media1 --set-v4l2 '"a0030000.mipi_rx_to_video":1[fmt:SRGGB10_1X10/1992x1152 field:none]'
+	media-ctl -d /dev/media1 --set-v4l2 '"axi:camif_rpi_axis_subsetconv":0[fmt:SRGGB10_1X10/1992x1152 field:none]'
+	media-ctl -d /dev/media1 --set-v4l2 '"axi:camif_rpi_axis_subsetconv":1[fmt:Y10_1X10/1992x1152 field:none]'
+	media-ctl -d /dev/media0 --set-v4l2 '"a0060000.infinite_isp":0[fmt:Y10_1X10/1992x1152 field:none]'
+	media-ctl -d /dev/media0 --set-v4l2 '"a0064000.xil_vip":1[fmt:RBG888_1X24/1920x1080 field:none]'
+
 uninstall: check_root check_arch
 	$(MAKE) unload_modules
 	-rmdir /sys/kernel/config/device-tree/overlays/Infinite_ISP
@@ -165,5 +175,5 @@ endif
 
 .PHONY: all modules dtbo clean install install_modules load_modules \
 	install_dtbo install_bitstream reload unload_modules unbind_composites \
-	bind_composites \
+	bind_composites setup-media \
 	check_devices_idle uninstall check_arch check_root

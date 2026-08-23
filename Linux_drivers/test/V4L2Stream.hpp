@@ -40,6 +40,18 @@ struct Buffer {
     void   *start = nullptr;   // only for MMAP
     size_t  length = 0;
     int     fd = -1;            // exported DMABUF
+    bool    ownsFd = false;
+};
+
+struct ExternalDmaBuffer {
+    int fd = -1;
+    size_t length = 0;
+};
+
+struct DequeueInfo {
+    uint32_t sequence = 0;
+    struct timeval timestamp{};
+    uint32_t flags = 0;
 };
 
 class V4L2Stream {
@@ -63,6 +75,8 @@ public:
         for (auto &b : buffers) {
             if (b.start)
                 munmap(b.start, b.length);
+            if (b.fd >= 0 && b.ownsFd)
+                close(b.fd);
         }
         buffers.clear();
         if (fd >= 0)
@@ -113,6 +127,8 @@ public:
             return false;
         }
 
+        memoryType = V4L2_MEMORY_MMAP;
+
         buffers.resize(req.count);
 
         for (uint32_t i = 0; i < req.count; ++i) {
@@ -148,8 +164,10 @@ public:
     }
 
     bool queueAllCapture() {
-        for (size_t i = 0; i < buffers.size(); ++i)
-            queueCapture(i);
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            if (!queueCapture(i))
+                return false;
+        }
         return true;
     }
 
@@ -157,10 +175,16 @@ public:
         struct v4l2_buffer buf{};
         struct v4l2_plane planes[VIDEO_MAX_PLANES]{};
         buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        buf.memory = V4L2_MEMORY_MMAP;
+        buf.memory = memoryType;
         buf.index  = idx;
         buf.m.planes = planes;
         buf.length = numPlanes;
+        if (memoryType == V4L2_MEMORY_DMABUF) {
+            if (idx < 0 || static_cast<size_t>(idx) >= buffers.size())
+                return false;
+            planes[0].m.fd = buffers[idx].fd;
+            planes[0].length = buffers[idx].length;
+        }
         if (xioctl(fd, VIDIOC_QBUF, &buf) < 0) {
             perror_ln("VIDIOC_QBUF capture");
             return false;
@@ -183,6 +207,35 @@ public:
                 return false;
             }
             buffers[i].fd = exp.fd;
+            buffers[i].ownsFd = true;
+        }
+        return true;
+    }
+
+    bool initDMABufCapture(const std::vector<ExternalDmaBuffer> &external) {
+        if (isOutput || external.empty())
+            return false;
+
+        struct v4l2_requestbuffers req{};
+        req.count = external.size();
+        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        req.memory = V4L2_MEMORY_DMABUF;
+        if (xioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+            perror_ln("VIDIOC_REQBUFS capture DMABUF");
+            return false;
+        }
+        if (req.count == 0 || req.count > external.size()) {
+            std::cerr << "Unexpected capture DMABUF count " << req.count
+                      << "\n";
+            return false;
+        }
+
+        memoryType = V4L2_MEMORY_DMABUF;
+        buffers.resize(req.count);
+        for (uint32_t i = 0; i < req.count; ++i) {
+            buffers[i].fd = external[i].fd;
+            buffers[i].length = external[i].length;
+            buffers[i].ownsFd = false;
         }
         return true;
     }
@@ -197,6 +250,7 @@ public:
             perror_ln("VIDIOC_REQBUFS DMABUF");
             return false;
         }
+        memoryType = V4L2_MEMORY_DMABUF;
         buffers.resize(req.count);
         return true;
     }
@@ -245,7 +299,7 @@ public:
         streaming = false;
     }
 
-    int dequeue(int timeout_ms) {
+    int dequeue(int timeout_ms, DequeueInfo *info = nullptr) {
         struct pollfd pfd{fd, (short)(isOutput ? POLLOUT : POLLIN), 0};
         if (poll(&pfd, 1, timeout_ms) <= 0)
             return -1;
@@ -255,14 +309,17 @@ public:
         buf.type   = isOutput ?
             V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE :
             V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        buf.memory = isOutput ?
-            V4L2_MEMORY_DMABUF :
-            V4L2_MEMORY_MMAP;
+        buf.memory = memoryType;
         buf.m.planes = planes;
         buf.length = numPlanes;
 
         if (xioctl(fd, VIDIOC_DQBUF, &buf) < 0)
             return -1;
+        if (info) {
+            info->sequence = buf.sequence;
+            info->timestamp = buf.timestamp;
+            info->flags = buf.flags;
+        }
         return buf.index;
     }
 
@@ -284,6 +341,7 @@ private:
     uint32_t bytesPerLine{0};
     uint32_t pixelFormat{0};
     unsigned numPlanes{1};
+    enum v4l2_memory memoryType{V4L2_MEMORY_MMAP};
 };
 
 /* --------------------------------------------------------- */
@@ -306,6 +364,15 @@ public:
     bool pop(int &v) {
         std::unique_lock<std::mutex> lk(m);
         cv.wait(lk, [&]{ return !q.empty() || !m_running; });
+        if (q.empty()) return false;
+        v = q.front();
+        q.pop();
+        cv.notify_all();
+        return true;
+    }
+
+    bool tryPop(int &v) {
+        std::lock_guard<std::mutex> lk(m);
         if (q.empty()) return false;
         v = q.front();
         q.pop();

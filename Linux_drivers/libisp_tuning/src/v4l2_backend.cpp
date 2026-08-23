@@ -58,6 +58,30 @@ struct V4L2Backend::Impl {
         return true;
     }
 
+    bool setColorCorrectionMatrix(
+        const std::array<std::int32_t, 9> &matrix)
+    {
+        /* REG_CCM occupies one 128-word ISP register block. */
+        std::array<std::uint32_t, 128> payload{};
+        for (std::size_t i = 0; i < matrix.size(); ++i)
+            payload[i] = static_cast<std::uint32_t>(matrix[i]);
+
+        v4l2_ext_control control{};
+        control.id = V4L2_CID_USER_XIL_ISP_LITE_CCM;
+        control.size = sizeof(payload);
+        control.ptr = payload.data();
+
+        v4l2_ext_controls controls{};
+        controls.which = V4L2_CTRL_WHICH_CUR_VAL;
+        controls.count = 1;
+        controls.controls = &control;
+        if (retryIoctl(fd, VIDIOC_S_EXT_CTRLS, &controls) < 0) {
+            setErrno("VIDIOC_S_EXT_CTRLS(CCM)");
+            return false;
+        }
+        return true;
+    }
+
     std::string device_path;
     std::string error;
     int fd = -1;
@@ -265,6 +289,9 @@ bool V4L2Backend::apply(const ControlUpdate &controls)
         return false;
     if (controls.digital_gain &&
         !impl_->setControl(V4L2_CID_DIGITAL_GAIN, *controls.digital_gain))
+        return false;
+    if (controls.color_correction_matrix &&
+        !impl_->setColorCorrectionMatrix(*controls.color_correction_matrix))
         return false;
     return true;
 }

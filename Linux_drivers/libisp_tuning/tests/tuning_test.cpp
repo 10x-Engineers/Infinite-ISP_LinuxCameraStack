@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "infinite_isp/tuning.hpp"
 
+#include <array>
 #include <cassert>
 
 using infinite_isp::AeMode;
@@ -62,6 +63,22 @@ int main()
     const auto sensor_isp_controls = sensor_isp.initialControls();
     assert(sensor_isp_controls.auto_gain == false);
     assert(sensor_isp_controls.digital_gain == 0);
+
+    TuningConfig color_config;
+    color_config.hardware_awb = false;
+    color_config.manual_wb_r_gain = 403;
+    color_config.manual_wb_b_gain = 370;
+    color_config.color_correction_matrix =
+        std::array<std::int32_t, 9>{2804, -1357, -424,
+                                    -584, 2099, -490,
+                                    -256, -1414, 2683};
+    AutoTuner color_tuner(color_config);
+    const auto color_controls = color_tuner.initialControls();
+    assert(color_controls.auto_white_balance == false);
+    assert(color_controls.red_balance == 403);
+    assert(color_controls.blue_balance == 370);
+    assert(color_controls.color_correction_matrix ==
+           color_config.color_correction_matrix);
 
     SensorAeConfig sensor_config;
     sensor_config.initial_analogue_gain = 192;

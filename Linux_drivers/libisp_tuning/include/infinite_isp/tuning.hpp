@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -43,6 +44,7 @@ struct ControlUpdate {
     std::optional<std::uint32_t> red_balance;
     std::optional<std::uint32_t> blue_balance;
     std::optional<std::uint32_t> digital_gain;
+    std::optional<std::array<std::int32_t, 9>> color_correction_matrix;
 
     bool empty() const;
 };
@@ -61,6 +63,9 @@ struct TuningConfig {
     std::uint32_t dgain_step = 1;
     std::uint32_t decision_frames = 4;
     std::uint32_t fixed_dgain_index = 0;
+    std::optional<std::uint32_t> manual_wb_r_gain;
+    std::optional<std::uint32_t> manual_wb_b_gain;
+    std::optional<std::array<std::int32_t, 9>> color_correction_matrix;
 };
 
 struct SensorAeConfig {

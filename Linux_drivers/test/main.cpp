@@ -1,31 +1,73 @@
 #include <iostream>
 #include <csignal>
 #include <cerrno>
+#include <array>
+#include <cstdint>
 #include <atomic>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <deque>
+#include <limits>
+#include <sstream>
 #include <thread>
 #include <chrono>
+#include <ctime>
 #include <opencv2/opencv.hpp>
 #include "V4L2Subdev.hpp"
 #include "V4L2Stream.hpp"
 #include "infinite_isp/tuning.hpp"
 #include "infinite_isp/v4l2_backend.hpp"
+#ifdef ISP_HAVE_GSTREAMER
+#include "GstViewer.hpp"
+#endif
+#ifdef ISP_HAVE_MALI_EGL
+#include "MaliEglDmaBufViewer.hpp"
+#endif
 
 static std::atomic<bool> g_running{true};
 static std::atomic<uint64_t> g_sensor_frames{0};
 static std::atomic<uint64_t> g_ispin_frames{0};
 static std::atomic<uint64_t> g_ispout_frames{0};
+static std::atomic<uint64_t> g_display_frames{0};
 static std::atomic<uint64_t> g_tuning_frames{0};
+static std::atomic<uint64_t> g_display_stale_frames{0};
+static std::atomic<uint64_t> g_display_age_samples{0};
+static std::atomic<uint64_t> g_display_age_total_us{0};
+static std::atomic<uint64_t> g_display_age_max_us{0};
 static std::atomic<uint32_t> g_latest_tuning_sequence{0};
 static std::atomic<uint32_t> g_latest_ae_response{2};
 static std::atomic<uint32_t> g_latest_ae_skewness{0};
 static std::atomic<uint32_t> g_latest_dgain_index{0};
 static std::atomic<uint32_t> g_latest_sensor_again{0};
 static void sigint_handler(int){ g_running = false; }
+
+static void recordDisplayAge(const DequeueInfo &info) {
+    if (info.timestamp.tv_sec == 0)
+        return;
+
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return;
+    const std::uint64_t nowUs = static_cast<std::uint64_t>(now.tv_sec) *
+        1000000ULL + static_cast<std::uint64_t>(now.tv_nsec) / 1000ULL;
+    const std::uint64_t bufferUs =
+        static_cast<std::uint64_t>(info.timestamp.tv_sec) * 1000000ULL +
+        static_cast<std::uint64_t>(info.timestamp.tv_usec);
+    if (bufferUs > nowUs || nowUs - bufferUs > 5000000ULL)
+        return;
+
+    const std::uint64_t ageUs = nowUs - bufferUs;
+    g_display_age_total_us.fetch_add(ageUs, std::memory_order_relaxed);
+    g_display_age_samples.fetch_add(1, std::memory_order_relaxed);
+    auto maximum = g_display_age_max_us.load(std::memory_order_relaxed);
+    while (maximum < ageUs &&
+           !g_display_age_max_us.compare_exchange_weak(
+               maximum, ageUs, std::memory_order_relaxed)) {
+    }
+}
 
 static cv::Rect measurementRoiFromEnvironment(int width, int height) {
     const cv::Rect fullFrame(0, 0, width, height);
@@ -206,6 +248,64 @@ static infinite_isp::TuningConfig tuningConfigFromEnvironment(bool &enabled) {
                   << "', using sensor-ae mode" << std::endl;
         config.ae_mode = infinite_isp::AeMode::Sensor;
     }
+
+    const char *wbR = std::getenv("ISP_WB_R_GAIN");
+    const char *wbB = std::getenv("ISP_WB_B_GAIN");
+    if (wbR || wbB) {
+        if (!wbR || !wbB) {
+            std::cerr << "[Tuning] ISP_WB_R_GAIN and ISP_WB_B_GAIN must be "
+                         "set together; keeping hardware AWB"
+                      << std::endl;
+        } else {
+            char *rEnd = nullptr;
+            char *bEnd = nullptr;
+            const unsigned long r = std::strtoul(wbR, &rEnd, 0);
+            const unsigned long b = std::strtoul(wbB, &bEnd, 0);
+            if (!rEnd || *rEnd != '\0' || !bEnd || *bEnd != '\0' ||
+                r > std::numeric_limits<std::uint32_t>::max() ||
+                b > std::numeric_limits<std::uint32_t>::max()) {
+                std::cerr << "[Tuning] Invalid manual WB gains; keeping "
+                             "hardware AWB"
+                          << std::endl;
+            } else {
+                config.hardware_awb = false;
+                config.manual_wb_r_gain = static_cast<std::uint32_t>(r);
+                config.manual_wb_b_gain = static_cast<std::uint32_t>(b);
+            }
+        }
+    }
+
+    if (const char *value = std::getenv("ISP_CCM")) {
+        std::array<std::int32_t, 9> matrix{};
+        std::stringstream stream(value);
+        bool valid = true;
+        for (std::size_t i = 0; i < matrix.size(); ++i) {
+            long coefficient = 0;
+            if (!(stream >> coefficient) || coefficient < -32768 ||
+                coefficient > 32767) {
+                valid = false;
+                break;
+            }
+            matrix[i] = static_cast<std::int32_t>(coefficient);
+            if (i + 1 < matrix.size()) {
+                char separator = 0;
+                if (!(stream >> separator) || separator != ',') {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        stream >> std::ws;
+        if (!stream.eof())
+            valid = false;
+        if (valid) {
+            config.color_correction_matrix = matrix;
+        } else {
+            std::cerr << "[Tuning] Invalid ISP_CCM; expected nine comma-"
+                         "separated signed Q10 coefficients"
+                      << std::endl;
+        }
+    }
     return config;
 }
 
@@ -228,11 +328,14 @@ static void tuningThread(infinite_isp::V4L2Backend *backend,
                          infinite_isp::V4L2SensorBackend *sensorBackend,
                          infinite_isp::SensorAeTuner *sensorTuner) {
     unsigned int print_interval = 0;
-    const char *mode = "software ISP AE + hardware AWB";
+    std::string mode = "software ISP AE";
     if (tuner->config().ae_mode == infinite_isp::AeMode::Hardware)
-        mode = "hardware AE/AWB";
+        mode = "hardware AE";
     else if (tuner->config().ae_mode == infinite_isp::AeMode::Sensor)
-        mode = "sensor AGAIN AE + hardware AWB";
+        mode = "sensor AGAIN AE";
+    mode += tuner->config().hardware_awb ? " + hardware AWB" : " + manual WB";
+    if (tuner->config().color_correction_matrix)
+        mode += " + CCM override";
     std::cout << "[Tuning] Metadata-driven thread started (" << mode << ")"
               << std::endl;
 
@@ -293,6 +396,9 @@ static void tuningThread(infinite_isp::V4L2Backend *backend,
 }
 
 int ispPipelineRun() {
+    constexpr int kIspOutputWidth = 1920;
+    constexpr int kIspOutputHeight = 1080;
+    constexpr int kPipelineBufferCount = 4;
     const std::string sensorCapture =
         findVideoNodeByName("vcap_mipi_csi2_rx_rpi output 0");
     const std::string ispInput =
@@ -306,31 +412,127 @@ int ispPipelineRun() {
               << "ISP input:      " << ispInput << '\n'
               << "ISP output:     " << ispOutput << std::endl;
 
-    V4L2Stream cap0(sensorCapture, false, 6);
-    V4L2Stream out3(ispInput, true, 6);
-    V4L2Stream cap2(ispOutput, false, 6);
+    const bool headless = std::getenv("ISP_HEADLESS") != nullptr;
+#ifdef ISP_HAVE_MALI_EGL
+    constexpr const char *kDefaultDisplayBackend = "mali";
+#else
+    constexpr const char *kDefaultDisplayBackend = "gstreamer";
+#endif
+    std::string displayBackend = std::getenv("ISP_DISPLAY_BACKEND")
+        ? std::getenv("ISP_DISPLAY_BACKEND") : kDefaultDisplayBackend;
+#ifndef ISP_HAVE_GSTREAMER
+    if (!headless && displayBackend == "gstreamer") {
+        std::cerr << "[Display] GStreamer development files were not found "
+                     "at build time; falling back to OpenCV"
+                  << std::endl;
+        displayBackend = "opencv";
+    }
+#endif
+#ifndef ISP_HAVE_MALI_EGL
+    if (!headless && displayBackend == "mali") {
+        std::cerr << "[Display] EGL/GLES2/X11 development files were not "
+                     "found at build time; falling back"
+                  << std::endl;
+#ifdef ISP_HAVE_GSTREAMER
+        displayBackend = "gstreamer";
+#else
+        displayBackend = "opencv";
+#endif
+    }
+#endif
+    if (displayBackend != "mali" && displayBackend != "gstreamer" &&
+        displayBackend != "opencv") {
+        std::cerr << "[Display] Unknown ISP_DISPLAY_BACKEND='"
+                  << displayBackend << "'; using " << kDefaultDisplayBackend
+                  << std::endl;
+        displayBackend = kDefaultDisplayBackend;
+    }
+    const bool maliDisplay = !headless && displayBackend == "mali";
+    const bool gstreamerDisplay = !headless && displayBackend == "gstreamer";
+    const bool opencvDisplay = !headless && displayBackend == "opencv";
+
+    int displayWidth = 960;
+    if (const char *value = std::getenv("ISP_DISPLAY_WIDTH"))
+        displayWidth = std::max(160, std::atoi(value));
+    displayWidth = std::min(displayWidth, kIspOutputWidth);
+    const int displayHeight = kIspOutputHeight * displayWidth /
+                              kIspOutputWidth;
+    int displayFps = maliDisplay ? 30 : 15;
+    if (const char *value = std::getenv("ISP_DISPLAY_FPS"))
+        displayFps = std::clamp(std::atoi(value), 1, 60);
+    bool maliLowLatency = true;
+    if (const char *value = std::getenv("ISP_MALI_LOW_LATENCY"))
+        maliLowLatency = std::atoi(value) != 0;
+    int opencvThreads = 4;
+    if (const char *value = std::getenv("ISP_OPENCV_THREADS"))
+        opencvThreads = std::clamp(std::atoi(value), 1, 4);
+    if (opencvDisplay)
+        cv::setNumThreads(opencvThreads);
+    if (!headless) {
+        std::cout << "[Display] backend=" << displayBackend << ", "
+                  << displayWidth << 'x' << displayHeight << " @ "
+                  << displayFps << " FPS";
+        if (opencvDisplay)
+            std::cout << ", OpenCV threads=" << opencvThreads;
+        if (maliDisplay)
+            std::cout << ", low-latency="
+                      << (maliLowLatency ? "on" : "off");
+        std::cout << std::endl;
+    }
+
+    V4L2Stream cap0(sensorCapture, false, kPipelineBufferCount);
+    V4L2Stream out3(ispInput, true, kPipelineBufferCount);
+    V4L2Stream cap2(ispOutput, false, kPipelineBufferCount);
     // GstKmsViewer viewer("/dev/video2", 1920, 1080, "YUY2");
 
-    cap0.openDevice();
-    out3.openDevice();
-    cap2.openDevice();
+    if (!cap0.openDevice() || !out3.openDevice() || !cap2.openDevice())
+        return -1;
 
-    cap0.setFormat(1992,1152,v4l2_fourcc('X','Y','1','0'));
-    out3.setFormat(1992,1152,v4l2_fourcc('X','Y','1','0'));
+    if (!cap0.setFormat(1992,1152,v4l2_fourcc('X','Y','1','0')) ||
+        !out3.setFormat(1992,1152,v4l2_fourcc('X','Y','1','0')))
+        return -1;
     /* Match Vitis: RGB video bus written to memory in BGR24 order. */
-    cap2.setFormat(1920,1080,V4L2_PIX_FMT_BGR24);
+    if (!cap2.setFormat(kIspOutputWidth, kIspOutputHeight,
+                        V4L2_PIX_FMT_BGR24))
+        return -1;
 
-    cap0.initMMap();
-    cap2.initMMap();
+    if (!cap0.initMMap())
+        return -1;
 
-    cap0.exportAllDMABuf();
-    out3.initDMABufImport(cap0.buffers.size());
+#ifdef ISP_HAVE_MALI_EGL
+    std::unique_ptr<MaliEglDmaBufViewer> maliViewer;
+    if (maliDisplay) {
+        if (!cap2.initMMap() || !cap2.exportAllDMABuf())
+            return -1;
+        maliViewer = std::make_unique<MaliEglDmaBufViewer>(
+            kIspOutputWidth, kIspOutputHeight, displayWidth, displayHeight);
+        std::vector<int> displayFds;
+        displayFds.reserve(cap2.buffers.size());
+        for (const auto &buffer : cap2.buffers)
+            displayFds.push_back(buffer.fd);
+        if (!maliViewer->setBuffers(displayFds.data(), displayFds.size(),
+                                    cap2.frameStride())) {
+            std::cerr << "[Display] VIP DMA-BUF setup failed: "
+                      << maliViewer->lastError() << std::endl;
+            return -1;
+        }
+        std::cout << "[Display] zero-copy buffers="
+                  << displayFds.size() << ", stride="
+                  << cap2.frameStride() << std::endl;
+    } else
+#endif
+    if (!cap2.initMMap())
+        return -1;
 
-    cap0.queueAllCapture();
-    cap2.queueAllCapture();
+    if (!cap0.exportAllDMABuf() ||
+        !out3.initDMABufImport(cap0.buffers.size()))
+        return -1;
 
-    cap0.startStreaming();
-    cap2.startStreaming();
+    if (!cap0.queueAllCapture() || !cap2.queueAllCapture())
+        return -1;
+
+    if (!cap0.startStreaming() || !cap2.startStreaming())
+        return -1;
     // viewer.start();
 
     bool tuningEnabled = false;
@@ -417,45 +619,79 @@ int ispPipelineRun() {
     /* out3 worker */
     std::thread t1([&](){
         bool started = false;
+        size_t inFlight = 0;
         while (g_running) {
             int idx;
-            if (!ready_q.pop(idx))
-                continue;
-
             if (!started) {
-                out3.startStreaming();
+                if (!ready_q.pop(idx))
+                    continue;
+                if (!out3.queueDMABuf(
+                    idx,
+                    cap0.buffers[idx].fd,
+                    cap0.bufferLen(idx)
+                )) {
+                    g_running = false;
+                    cap0.queueCapture(idx);
+                    break;
+                }
+                ++inFlight;
+                g_ispin_frames.fetch_add(1, std::memory_order_relaxed);
+                if (!out3.startStreaming()) {
+                    g_running = false;
+                    break;
+                }
                 started = true;
             }
 
-            out3.queueDMABuf(
-                idx,
-                cap0.buffers[idx].fd,
-                cap0.bufferLen(idx)
-            );
+            while (inFlight < out3.buffers.size() && ready_q.tryPop(idx)) {
+                if (!out3.queueDMABuf(
+                    idx,
+                    cap0.buffers[idx].fd,
+                    cap0.bufferLen(idx)
+                )) {
+                    g_running = false;
+                    cap0.queueCapture(idx);
+                    break;
+                }
+                ++inFlight;
+                g_ispin_frames.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (!g_running)
+                break;
 
-            g_ispin_frames.fetch_add(1, std::memory_order_relaxed);
-            int done = out3.dequeue(1000);
-            if (done >= 0)
-            {
-                cap0.queueCapture(done);
+            int done = out3.dequeue(100);
+            if (done >= 0) {
+                --inFlight;
+                if (!cap0.queueCapture(done)) {
+                    g_running = false;
+                    break;
+                }
             }
         }
     });
 
-    const bool headless = std::getenv("ISP_HEADLESS") != nullptr;
     int saveAfterFrames = 30;
     if (const char *value = std::getenv("ISP_CAPTURE_FRAME"))
         saveAfterFrames = std::max(1, std::atoi(value));
     const std::string capturePrefix = std::getenv("ISP_CAPTURE_PREFIX") ?
         std::getenv("ISP_CAPTURE_PREFIX") : "isp_capture";
     const cv::Rect measureRoi = measurementRoiFromEnvironment(
-        cap2.frameWidth(), cap2.frameHeight());
+        kIspOutputWidth, kIspOutputHeight);
     std::ofstream measureCsv;
     if (const char *value = std::getenv("ISP_MEASURE_CSV")) {
-        measureCsv.open(value);
-        if (!measureCsv) {
-            std::cerr << "Cannot open ISP_MEASURE_CSV='" << value << "'"
+        if (maliDisplay) {
+            std::cerr << "[Measure] ISP_MEASURE_CSV requires the gstreamer, "
+                         "opencv, or headless backend; image sampling is "
+                         "disabled for the Mali zero-copy path"
                       << std::endl;
+        } else {
+            measureCsv.open(value);
+        }
+        if (!measureCsv) {
+            if (!maliDisplay) {
+                std::cerr << "Cannot open ISP_MEASURE_CSV='" << value << "'"
+                          << std::endl;
+            }
         } else {
             measureCsv << "frame,timestamp_us,mean_b,mean_g,mean_r,mean_y,"
                           "roi_b,roi_g,roi_r,roi_y,tuning_seq,ae_response,"
@@ -467,16 +703,102 @@ int ispPipelineRun() {
         }
     }
 
-    /* cap2 display / headless capture */
+#ifdef ISP_HAVE_GSTREAMER
+    std::unique_ptr<GstViewer> gstViewer;
+    if (gstreamerDisplay) {
+        gstViewer = std::make_unique<GstViewer>(
+            kIspOutputWidth, kIspOutputHeight, displayWidth, displayHeight,
+            displayFps, g_running);
+        if (!gstViewer->start()) {
+            std::cerr << "[Display] GStreamer start failed: "
+                      << gstViewer->lastError() << std::endl;
+            g_running = false;
+        }
+    }
+#endif
+    /* cap2 capture plus GStreamer or OpenCV preview */
     std::thread t2([&](){
-        if (!headless)
+#ifdef ISP_HAVE_MALI_EGL
+        if (maliDisplay && !maliViewer->start()) {
+            std::cerr << "[Display] Mali EGL start failed: "
+                      << maliViewer->lastError() << std::endl;
+            g_running = false;
+            return;
+        }
+#endif
+        if (opencvDisplay) {
             cv::namedWindow("ISP", cv::WINDOW_NORMAL);
+            cv::resizeWindow("ISP", displayWidth, displayHeight);
+        }
+        const auto displayPeriod = std::chrono::microseconds(
+            1000000 / displayFps);
+        auto nextDisplay = std::chrono::steady_clock::now();
+        if (maliDisplay && maliLowLatency)
+            nextDisplay += displayPeriod;
+        std::deque<int> pendingMaliBuffers;
         int frameNumber = 0;
         while (g_running) {
-            int idx = cap2.dequeue(500);
+#ifdef ISP_HAVE_MALI_EGL
+            if (maliDisplay) {
+                for (auto it = pendingMaliBuffers.begin();
+                     it != pendingMaliBuffers.end();) {
+                    if (maliViewer->bufferComplete(*it)) {
+                        if (!cap2.queueCapture(*it))
+                            g_running = false;
+                        it = pendingMaliBuffers.erase(it);
+                    } else {
+                        if (!maliViewer->lastError().empty()) {
+                            std::cerr << "[Display] Mali fence query failed: "
+                                      << maliViewer->lastError() << std::endl;
+                            g_running = false;
+                        }
+                        ++it;
+                    }
+                }
+            }
+#endif
+            DequeueInfo dequeueInfo{};
+            int idx = cap2.dequeue(500, &dequeueInfo);
             if (idx >= 0) {
                 g_ispout_frames.fetch_add(1, std::memory_order_relaxed);
                 ++frameNumber;
+#ifdef ISP_HAVE_MALI_EGL
+                if (maliDisplay) {
+                    auto now = std::chrono::steady_clock::now();
+                    if (maliLowLatency && now < nextDisplay) {
+                        g_display_stale_frames.fetch_add(
+                            1, std::memory_order_relaxed);
+                        if (!cap2.queueCapture(idx))
+                            g_running = false;
+                        continue;
+                    }
+                    if (!maliLowLatency && now < nextDisplay) {
+                        std::this_thread::sleep_until(nextDisplay);
+                        now = std::chrono::steady_clock::now();
+                    }
+                    if (!maliViewer->render(idx)) {
+                        maliViewer->waitForBuffer(idx);
+                        if (!maliViewer->lastError().empty()) {
+                            std::cerr << "[Display] Mali EGL render failed: "
+                                      << maliViewer->lastError() << std::endl;
+                        }
+                        g_running = false;
+                    } else {
+                        pendingMaliBuffers.push_back(idx);
+                        idx = -1;
+                        g_display_frames.fetch_add(
+                            1, std::memory_order_relaxed);
+                        recordDisplayAge(dequeueInfo);
+                    }
+                    nextDisplay += displayPeriod;
+                    now = std::chrono::steady_clock::now();
+                    if (nextDisplay <= now)
+                        nextDisplay = now + displayPeriod;
+                    if (idx >= 0 && !cap2.queueCapture(idx))
+                        g_running = false;
+                    continue;
+                }
+#endif
                 cv::Mat bgr(cap2.frameHeight(), cap2.frameWidth(), CV_8UC3,
                                cap2.bufferPtr(idx), cap2.frameStride());
 
@@ -536,12 +858,49 @@ int ispPipelineRun() {
                               << "Mean BGR if swapped: " << meanRgb << std::endl;
                     g_running = false;
                 } else if (!headless) {
-                    cv::imshow("ISP", bgr);
-                    cv::waitKey(1);
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= nextDisplay) {
+#ifdef ISP_HAVE_GSTREAMER
+                        if (gstreamerDisplay) {
+                            if (!gstViewer->pushBgrFrame(
+                                    cap2.bufferPtr(idx), cap2.frameStride())) {
+                                std::cerr << "[Display] GStreamer push failed: "
+                                          << gstViewer->lastError()
+                                          << std::endl;
+                                g_running = false;
+                            } else {
+                                g_display_frames.fetch_add(
+                                    1, std::memory_order_relaxed);
+                            }
+                        } else
+#endif
+                        {
+                            cv::Mat preview;
+                            cv::resize(bgr, preview,
+                                       cv::Size(displayWidth, displayHeight),
+                                       0.0, 0.0, cv::INTER_LINEAR);
+                            cv::imshow("ISP", preview);
+                            cv::waitKey(1);
+                            g_display_frames.fetch_add(
+                                1, std::memory_order_relaxed);
+                        }
+                        nextDisplay += displayPeriod;
+                        if (nextDisplay <= now)
+                            nextDisplay = now + displayPeriod;
+                    }
                 }
                 cap2.queueCapture(idx);
             }
         }
+#ifdef ISP_HAVE_MALI_EGL
+        if (maliDisplay) {
+            for (int index : pendingMaliBuffers) {
+                if (maliViewer->waitForBuffer(index))
+                    cap2.queueCapture(index);
+            }
+            maliViewer->stop();
+        }
+#endif
     });
 
     /* FPS monitor thread */
@@ -551,10 +910,31 @@ int ispPipelineRun() {
             uint64_t s = g_sensor_frames.exchange(0, std::memory_order_relaxed);
             uint64_t in = g_ispin_frames.exchange(0, std::memory_order_relaxed);
             uint64_t out = g_ispout_frames.exchange(0, std::memory_order_relaxed);
+            uint64_t display = g_display_frames.exchange(
+                0, std::memory_order_relaxed);
             uint64_t tune = g_tuning_frames.exchange(0, std::memory_order_relaxed);
-            printf("FPS -> sensor: %3llu, ispin: %3llu, ispout: %3llu, tuning: %3llu\n",
+            uint64_t stale = g_display_stale_frames.exchange(
+                0, std::memory_order_relaxed);
+            uint64_t ageSamples = g_display_age_samples.exchange(
+                0, std::memory_order_relaxed);
+            uint64_t ageTotal = g_display_age_total_us.exchange(
+                0, std::memory_order_relaxed);
+            uint64_t ageMaximum = g_display_age_max_us.exchange(
+                0, std::memory_order_relaxed);
+            printf("FPS -> sensor: %3llu, ispin: %3llu, ispout: %3llu, "
+                   "display: %3llu, tuning: %3llu",
                    (unsigned long long)s, (unsigned long long)in,
-                   (unsigned long long)out, (unsigned long long)tune);
+                   (unsigned long long)out, (unsigned long long)display,
+                   (unsigned long long)tune);
+            if (ageSamples) {
+                printf(", display-age: avg=%.1fms max=%.1fms",
+                       static_cast<double>(ageTotal) / ageSamples / 1000.0,
+                       static_cast<double>(ageMaximum) / 1000.0);
+            }
+            if (stale)
+                printf(", stale-skipped: %llu",
+                       (unsigned long long)stale);
+            printf("\n");
         }
     });
 
@@ -566,6 +946,13 @@ int ispPipelineRun() {
     t0.join();
     t1.join();
     t2.join();
+#ifdef ISP_HAVE_GSTREAMER
+    if (gstViewer) {
+        gstViewer->stop();
+        if (!gstViewer->lastError().empty())
+            std::cerr << "[Display] " << gstViewer->lastError() << std::endl;
+    }
+#endif
     if (tuning.joinable())
         tuning.join();
     if (tuningBackend) {
