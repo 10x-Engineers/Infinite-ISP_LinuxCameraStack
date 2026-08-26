@@ -102,13 +102,12 @@ const unsigned int awb_frames = 1;
 // AE 
 const unsigned int center_illuminance = 110;
 /*
- * Meter the central 80% so bright objects and logos at the frame edges do not
- * dominate the AE statistic.  Keep the original RTL skewness threshold; the
- * software sensor-AE loop applies hysteresis at the IMX219 control layer.
+ * Meter the central 80% of the 1640-pixel active image. The remaining 352
+ * pixels in the 1992-pixel DMA canvas are a right-hand black border.
  */
 const unsigned int histogram_skewnes = 192;
-const unsigned int ae_crop_left = 199;
-const unsigned int ae_crop_right = 199;
+const unsigned int ae_crop_left = 164;
+const unsigned int ae_crop_right = 516;
 const unsigned int ae_crop_top = 115;
 const unsigned int ae_crop_bottom = 115;
 
@@ -118,12 +117,12 @@ const unsigned int ae_crop_bottom = 115;
 const unsigned int rgbc_conv_standard = 2;
 
 // IRC 
-/* Center 1920x1080 inside the Linux IMX219 mode (1992x1152). */
+/* Power-on/default geometry; xil-vip applies the wide-mode override at STREAMON. */
 const unsigned int height_start_idx = 36;
 const unsigned int width_start_idx = 36;
 
 // SCALE 
-// No register setting required. All parameters were fixed at 1920x1080 in the design.
+// xil-vip programs the existing scale/crop registers for wide mode at STREAMON.
 
 // YUV444TO422 
 // 444 --> 0, 422 --> 1

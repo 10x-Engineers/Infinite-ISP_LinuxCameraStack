@@ -15,6 +15,22 @@
 
 namespace {
 
+// Mali r9p0 accepts the RGB565 views with a shared BGR24 pitch, but plane
+// offsets that are not aligned to 128 bytes are interpreted at the wrong byte
+// phase.  A BGR pixel pair occupies six bytes, so aligning a chunk boundary to
+// 64 pairs satisfies both the 128-byte import alignment and pair integrity.
+constexpr std::uint32_t kMaliPlaneOffsetAlignment = 128;
+constexpr std::uint32_t kBgrPairBytes = 6;
+constexpr std::uint32_t kChunkPairAlignment = 64;
+static_assert((kChunkPairAlignment * kBgrPairBytes) %
+                  kMaliPlaneOffsetAlignment == 0,
+              "Mali chunk boundaries must produce aligned byte offsets");
+
+std::uint32_t nearestAlignedPairBoundary(std::uint32_t pair) {
+    return ((pair + kChunkPairAlignment / 2) / kChunkPairAlignment) *
+           kChunkPairAlignment;
+}
+
 std::string eglError(const char *operation) {
     std::ostringstream stream;
     stream << operation << " failed (EGL error 0x" << std::hex
@@ -57,6 +73,9 @@ struct MaliEglDmaBufViewer::Impl {
     std::uint32_t frameHeight;
     std::uint32_t displayWidth;
     std::uint32_t displayHeight;
+    std::array<std::uint32_t, 3> chunkPairs{};
+    std::array<std::uint32_t, 3> chunkWords{};
+    std::array<std::uint32_t, 3> chunkByteOffsets{};
     std::string error;
 
     std::vector<Buffer> buffers;
@@ -103,20 +122,28 @@ struct MaliEglDmaBufViewer::Impl {
             uniform sampler2D video2;
             uniform float frame_width;
             uniform float frame_height;
-            uniform float chunk_pixel_width;
-            uniform float packed_width;
+            uniform float chunk_pairs0;
+            uniform float chunk_pairs1;
+            uniform float chunk_words0;
+            uniform float chunk_words1;
+            uniform float chunk_words2;
             varying vec2 video_texcoord;
 
             vec2 read_word(float word_index, float row, float chunk) {
-                vec2 uv = vec2((word_index + 0.5) / packed_width,
-                               (row + 0.5) / frame_height);
                 vec3 encoded;
-                if (chunk < 0.5)
+                if (chunk < 0.5) {
+                    vec2 uv = vec2((word_index + 0.5) / chunk_words0,
+                                   (row + 0.5) / frame_height);
                     encoded = texture2D(video0, uv).rgb;
-                else if (chunk < 1.5)
+                } else if (chunk < 1.5) {
+                    vec2 uv = vec2((word_index + 0.5) / chunk_words1,
+                                   (row + 0.5) / frame_height);
                     encoded = texture2D(video1, uv).rgb;
-                else
+                } else {
+                    vec2 uv = vec2((word_index + 0.5) / chunk_words2,
+                                   (row + 0.5) / frame_height);
                     encoded = texture2D(video2, uv).rgb;
+                }
                 vec3 bits = floor(encoded * vec3(31.0, 63.0, 31.0) + 0.5);
                 // Return the original little-endian bytes without ever
                 // constructing a 16-bit integer (Mali-400 fragment mediump).
@@ -130,14 +157,28 @@ struct MaliEglDmaBufViewer::Impl {
                                   frame_width - 1.0);
                 float row = min(floor(video_texcoord.y * frame_height),
                                 frame_height - 1.0);
-                float chunk = floor(pixel / chunk_pixel_width);
-                float local_pixel = pixel - chunk * chunk_pixel_width;
-                float first_index = floor(local_pixel * 1.5);
+                float pair = floor(pixel * 0.5);
+                float local_pair;
+                float chunk;
+                if (pair < chunk_pairs0) {
+                    chunk = 0.0;
+                    local_pair = pair;
+                } else if (pair < chunk_pairs0 + chunk_pairs1) {
+                    chunk = 1.0;
+                    local_pair = pair - chunk_pairs0;
+                } else {
+                    chunk = 2.0;
+                    local_pair = pair - chunk_pairs0 - chunk_pairs1;
+                }
+
+                float word_base = local_pair * 3.0;
+                bool odd = mod(pixel, 2.0) >= 0.5;
+                float first_index = word_base + (odd ? 1.0 : 0.0);
                 vec2 first = read_word(first_index, row, chunk);
                 vec2 second = read_word(first_index + 1.0, row, chunk);
 
                 vec3 rgb;
-                if (mod(local_pixel, 2.0) < 0.5) {
+                if (!odd) {
                     // Even BGR24 pixel: [B,G] in word N, [R,...] in N+1.
                     rgb = vec3(second.x, first.y, first.x);
                 } else {
@@ -185,10 +226,16 @@ struct MaliEglDmaBufViewer::Impl {
         glUniform1i(glGetUniformLocation(program, "video2"), 2);
         glUniform1f(glGetUniformLocation(program, "frame_width"), frameWidth);
         glUniform1f(glGetUniformLocation(program, "frame_height"), frameHeight);
-        glUniform1f(glGetUniformLocation(program, "chunk_pixel_width"),
-                    frameWidth / 3.0f);
-        glUniform1f(glGetUniformLocation(program, "packed_width"),
-                    buffers.front().stride / 6.0f);
+        glUniform1f(glGetUniformLocation(program, "chunk_pairs0"),
+                    chunkPairs[0]);
+        glUniform1f(glGetUniformLocation(program, "chunk_pairs1"),
+                    chunkPairs[1]);
+        glUniform1f(glGetUniformLocation(program, "chunk_words0"),
+                    chunkWords[0]);
+        glUniform1f(glGetUniformLocation(program, "chunk_words1"),
+                    chunkWords[1]);
+        glUniform1f(glGetUniformLocation(program, "chunk_words2"),
+                    chunkWords[2]);
         return positionAttribute >= 0 && textureAttribute >= 0;
     }
 };
@@ -212,11 +259,39 @@ bool MaliEglDmaBufViewer::setBuffers(const int *dmaBufFds,
         impl_->error = "invalid VIP DMA-BUF list";
         return false;
     }
-    if (impl_->frameWidth % 6 != 0 ||
-        stride != impl_->frameWidth * 3) {
-        impl_->error = "BGR24 zero-copy view requires a tightly packed width "
-                       "divisible by six";
+    if ((impl_->frameWidth & 1U) != 0 ||
+        stride < impl_->frameWidth * 3) {
+        impl_->error = "BGR24 zero-copy view requires an even width and a "
+                       "stride covering all active pixels";
         return false;
+    }
+
+    const std::uint32_t totalPairs = impl_->frameWidth / 2;
+    const std::uint32_t firstBoundary =
+        nearestAlignedPairBoundary(totalPairs / 3);
+    const std::uint32_t secondBoundary =
+        nearestAlignedPairBoundary(totalPairs * 2 / 3);
+    if (firstBoundary == 0 || secondBoundary <= firstBoundary ||
+        secondBoundary >= totalPairs) {
+        impl_->error = "BGR24 frame is too narrow for three aligned Mali "
+                       "DMA-BUF views";
+        return false;
+    }
+    impl_->chunkPairs = {
+        firstBoundary,
+        secondBoundary - firstBoundary,
+        totalPairs - secondBoundary,
+    };
+
+    std::uint32_t byteOffset = 0;
+    for (std::size_t chunk = 0; chunk < 3; ++chunk) {
+        if ((byteOffset % kMaliPlaneOffsetAlignment) != 0) {
+            impl_->error = "internal Mali DMA-BUF chunk alignment error";
+            return false;
+        }
+        impl_->chunkWords[chunk] = impl_->chunkPairs[chunk] * 3;
+        impl_->chunkByteOffsets[chunk] = byteOffset;
+        byteOffset += impl_->chunkPairs[chunk] * kBgrPairBytes;
     }
     impl_->buffers.clear();
     impl_->buffers.reserve(bufferCount);
@@ -372,20 +447,21 @@ bool MaliEglDmaBufViewer::start() {
         return false;
     }
 
-    const EGLint chunkWidth = static_cast<EGLint>(impl_->frameWidth / 2);
-    const EGLint chunkBytes = chunkWidth * 2;
     for (auto &buffer : impl_->buffers) {
         // Mali r9p0 rejects RGB888 imports. Split each BGR24 line into three
-        // RGB565 EGLImage views. Two BGR pixels occupy exactly three words;
-        // the shader reconstructs all six original bytes losslessly.
+        // pair- and plane-offset-aligned RGB565 EGLImage views. The chunks may
+        // have different widths (for example 256+320+244 pairs at 1640
+        // pixels), which keeps every two-pixel/six-byte group intact while
+        // satisfying Mali's 128-byte offset requirement.
         for (int chunk = 0; chunk < 3; ++chunk) {
             const EGLint imageAttributes[] = {
-                EGL_WIDTH, chunkWidth,
+                EGL_WIDTH, static_cast<EGLint>(impl_->chunkWords[chunk]),
                 EGL_HEIGHT, static_cast<EGLint>(impl_->frameHeight),
                 EGL_LINUX_DRM_FOURCC_EXT,
                     static_cast<EGLint>(DRM_FORMAT_RGB565),
                 EGL_DMA_BUF_PLANE0_FD_EXT, buffer.fd,
-                EGL_DMA_BUF_PLANE0_OFFSET_EXT, chunk * chunkBytes,
+                EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+                    static_cast<EGLint>(impl_->chunkByteOffsets[chunk]),
                 EGL_DMA_BUF_PLANE0_PITCH_EXT,
                     static_cast<EGLint>(buffer.stride),
                 EGL_NONE

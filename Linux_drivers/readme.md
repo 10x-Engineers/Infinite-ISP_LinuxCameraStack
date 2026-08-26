@@ -99,11 +99,14 @@ leave the media graph incomplete. The `reload` target avoids this by:
    the ISP graph on `/dev/media0` and the capture graph on `/dev/media1`.
 5. Waiting for udev to recreate the media, video, and subdevice nodes.
 
-The media-bus formats are reset during reload. Reapply the `media-ctl` commands
-in the capture section below before restarting the test application. Verify the
-two media graphs and check `dmesg` after each cycle. If removal reports an oops,
-a hung task, or an incomplete graph, stop reloading and reboot the board to
-restore the default state.
+The media-bus formats are reset during reload. `isp_pipeline` now reapplies all
+seven Sensor/MIPI/subset-converter/ISP/VIP formats at every startup, so it can
+be started directly after `sudo make reload`. The `make setup-media` target is
+retained for manual `v4l2-ctl` diagnostics; select its geometry with
+`FOV_MODE=wide` or `FOV_MODE=standard`. Verify the two media graphs and check
+`dmesg` after each cycle. If removal reports an oops, a hung task, or an
+incomplete graph, stop reloading and reboot the board to restore the default
+state.
 
 ### Shared ISP/VIP interrupt dispatcher
 
@@ -171,12 +174,12 @@ After successfully running `sudo make install`, you can capture an image from th
 ### 1. Capture RAW10 Image
 Execute the following command to capture a RAW10 format image:
 ```bash
-media-ctl -d /dev/media1 --set-v4l2 '"xlnx-imx219 6-0010":0[fmt:SRGGB10_1X10/1992x1152 field:none]'
-media-ctl -d /dev/media1 --set-v4l2 '"a0030000.mipi_rx_to_video":0[fmt:SRGGB10_1X10/1992x1152 field:none]'
-media-ctl -d /dev/media1 --set-v4l2 '"a0030000.mipi_rx_to_video":1[fmt:SRGGB10_1X10/1992x1152 field:none]'
-media-ctl -d /dev/media1 --set-v4l2 '"axi:camif_rpi_axis_subsetconv":0[fmt:SRGGB10_1X10/1992x1152 field:none]'
-media-ctl -d /dev/media1 --set-v4l2 '"axi:camif_rpi_axis_subsetconv":1[fmt:Y10_1X10/1992x1152 field:none]'
-v4l2-ctl -d /dev/video0 --set-fmt-video=width=1992,height=1152,pixelformat=XY10,bytesperline=2656 --stream-mmap=3 --stream-skip=30 --stream-count=1 --stream-poll --stream-to=camera.raw10
+media-ctl -d /dev/media1 --set-v4l2 '"xlnx-imx219 6-0010":0[fmt:SRGGB10_1X10/1640x1152 field:none]'
+media-ctl -d /dev/media1 --set-v4l2 '"a0030000.mipi_rx_to_video":0[fmt:SRGGB10_1X10/1640x1152 field:none]'
+media-ctl -d /dev/media1 --set-v4l2 '"a0030000.mipi_rx_to_video":1[fmt:SRGGB10_1X10/1640x1152 field:none]'
+media-ctl -d /dev/media1 --set-v4l2 '"axi:camif_rpi_axis_subsetconv":0[fmt:SRGGB10_1X10/1640x1152 field:none]'
+media-ctl -d /dev/media1 --set-v4l2 '"axi:camif_rpi_axis_subsetconv":1[fmt:Y10_1X10/1640x1152 field:none]'
+v4l2-ctl -d /dev/video4 --set-fmt-video=width=1640,height=1152,pixelformat=XY10,bytesperline=2656 --stream-mmap=3 --stream-skip=30 --stream-count=1 --stream-poll --stream-to=camera.raw10
 ```
 This will generate a raw image file (`camera.raw10` by default) in XY10 format.
 
@@ -220,33 +223,56 @@ demo is:
 
 ```sh
 cd Linux_drivers
-make setup-media
 sudo cmake -S test -B test/build
 sudo cmake --build test/build -j8
-DISPLAY=:0 ./test/build/isp_pipeline
+DISPLAY=:0 ISP_FOV_MODE=wide ./test/build/isp_pipeline
 ```
+
+This wide-FOV demo uses the existing FPGA image. The Sensor and MIPI graph run
+at `1640x1152`; the capture DMA writes those pixels at the left edge of a
+`1992x1152` DDR canvas with a 3840-byte row stride. No CPU image copy or Vivado
+bitstream rebuild is needed. `isp_pipeline` configures the complete media graph
+itself before opening the DMA nodes; an external `make setup-media` step is not
+required.
+
+The original cropped mode coexists with wide mode and uses the same executable:
+
+```sh
+DISPLAY=:0 ISP_FOV_MODE=standard ./test/build/isp_pipeline
+```
+
+Switching modes does not require a reboot, overlay reload, or KO reload. The
+wide output is `1640x1080`; the standard output is `1920x1080`.
 
 Run the build as root because the shared build tree can contain root-owned
 artifacts; run `isp_pipeline` as the desktop `ubuntu` user. The default demo
-opens a resizable 960x540 Mali-400 zero-copy preview at 30 FPS, enables
+opens a resizable 30 FPS zero-copy Mali-400 preview: wide mode starts at
+960x632, and standard mode starts at 960x540. It enables
 latest-frame low-latency display, and uses sensor analogue gain for AE with
 hardware AWB. Press `Ctrl+C` or close the window to stop it.
 
 If this is a fresh board rather than an already installed system, first install
 the dependencies below and follow the driver/overlay installation section
-above. After every `sudo make reload`, rerun `make setup-media` because media
-formats are reset when the graph is recreated.
+above. After `sudo make reload`, start `isp_pipeline` directly; it reapplies the
+selected mode's formats before streaming. For manual tools that do not perform
+that setup, use `make setup-media FOV_MODE=wide` or
+`make setup-media FOV_MODE=standard` first.
 
 ### Common Scenarios
 
-Run these commands from `Linux_drivers` after `make setup-media`:
+Run these commands from `Linux_drivers`:
 
 ```bash
-# Stable image/color baseline without automatic tuning.
-DISPLAY=:0 ISP_TUNING_MODE=off ./test/build/isp_pipeline
+# Stable wide-FOV image/color baseline without automatic tuning.
+DISPLAY=:0 ISP_FOV_MODE=wide ISP_TUNING_MODE=off \
+./test/build/isp_pipeline
 
-# Headless capture after 150 ISP output frames.
+# Original cropped field of view, using the same installed drivers and overlay.
+DISPLAY=:0 ISP_FOV_MODE=standard ./test/build/isp_pipeline
+
+# Headless capture of 20 consecutive frames after frame 150.
 ISP_HEADLESS=1 ISP_CAPTURE_FRAME=150 \
+ISP_CAPTURE_SERIES=20 \
 ISP_CAPTURE_PREFIX=/tmp/isp-frame ./test/build/isp_pipeline
 
 # Record image/tuning statistics for about six seconds, using a central ROI.
@@ -260,7 +286,8 @@ DISPLAY=:0 ISP_DISPLAY_BACKEND=gstreamer ./test/build/isp_pipeline
 DISPLAY=:0 ISP_DISPLAY_BACKEND=opencv ./test/build/isp_pipeline
 ```
 
-The headless commands create PNG/RAW files with the selected prefix. The CSV
+With `ISP_CAPTURE_SERIES=1`, headless mode creates the original PNG/RAW output;
+larger series create `PREFIX_NNN_bgr.png` files for temporal-noise analysis. The CSV
 scenario records BGR/luma measurements together with AE, AWB-related metadata,
 DGAIN, and sensor analogue gain. Mali display, tuning overrides, low-rate
 preview, framebuffer capture, and CCM examples are documented in the detailed
@@ -309,16 +336,75 @@ ISP_SENSOR_AE_FRAMES=10 ./test/build/isp_pipeline
 ```
 
 The sensor gain value is the IMX219 V4L2 control code (range 0 to 232), not a
-linear multiplier. The ISP uses the central 80% of the 1992x1152 input for AE
-statistics so bright objects at the frame edge do not dominate metering.
+linear multiplier. In wide mode the ISP meters the central 80% of the
+1640-pixel active Sensor image and excludes the unused part of the fixed input
+canvas.
 
-### IMX219 frame rate
+### IMX219 wide-FOV mode and frame rate
 
-The 1992x1152 cropped mode now uses VTS 1763 instead of 3526. With the
-182.4 MHz pixel rate and 3448-pixel line length this produces 30 FPS; the V4L2
-vertical-blanking control reads 611 lines. The default 1587-line exposure still
-fits below the 1759-line limit and remains approximately 30 ms for 50 Hz
-anti-flicker operation.
+The default Sensor mode is `1640x1152` RAW10 at 30 FPS. It takes a centered
+`3280x2304` region from the IMX219 active array and applies 2x2 binning, keeping
+the complete horizontal field of view and about 93.5% of the vertical field of
+view before the final VIP crop.
+
+Two runtime-selectable geometries coexist:
+
+| `ISP_FOV_MODE` | Sensor | ISP input canvas | VIP/output |
+| --- | --- | --- | --- |
+| `wide` (default) | 1640x1152, 2x2 binned | 1992x1152 | 1640x1080 |
+| `standard` | 1992x1152, unbinned crop | 1992x1152 | 1920x1080 |
+
+In wide mode the capture node uses a `1992x1152` XY10 canvas, a left-aligned
+`1640x1152` compose rectangle, and a 3840-byte stride. The DMA therefore leaves
+an unused 352-pixel region at the right of the ISP input canvas. The VIP driver
+disables the fixed 1920-wide IRC path and programs the existing scale/crop
+stage as a 1:1 `1640x1080` crop, so the final image contains no black bar. In
+standard mode it restores the original centered IRC crop (`x=36`, `y=36`) and
+emits `1920x1080`.
+
+The Xilinx composite path on this kernel does not propagate `s_stream` to the
+VIP subdevice. For that reason the VIP driver applies an ACTIVE source-format
+change from `set_fmt`, while the DMA pipeline is still stopped. This makes
+`standard -> wide -> standard` switching reliable without replacing modules.
+The application also discovers the current `/dev/video*` and
+`/dev/v4l-subdev*` numbering rather than assuming fixed node numbers.
+
+The AE margins are left=164, right=516, top=115, and bottom=115 in the
+`1992x1152` canvas. This measures the central 80% of the active Sensor image and
+does not include the inactive right canvas area. AWB rejects the near-zero
+right-canvas region through its underexposed threshold of 51.
+
+This arrangement works with the existing bitstream because Xilinx framebuffer
+DMA supports a row stride and a left-aligned compose width, and the generated
+VIP already contains the required crop/scale stage. No new HDL or bitstream is
+needed. On this driver a non-zero compose `left` is rejected, so the unused ISP
+input-canvas area remains on the right and is discarded only at VIP output.
+
+For manual media-graph tests outside `isp_pipeline`, configure the same modes
+with:
+
+```bash
+make setup-media FOV_MODE=wide
+make setup-media FOV_MODE=standard
+```
+
+The mode uses VTS 1763. With the 182.4 MHz pixel rate and 3448-pixel line
+length this produces 30 FPS; the V4L2 vertical-blanking control reads 611
+lines. The default 1587-line exposure still fits below the 1759-line limit and
+remains approximately 30 ms for 50 Hz anti-flicker operation.
+
+RAW10 uses the IMX219 digital 2x2 binning path (`0x0101`). It trades spatial
+resolution for lower visible random noise in weak light, but does not replace
+proper exposure/analogue-gain tuning and is not as effective as the Sensor's
+RAW8 analogue-binning path. Compare noise at identical exposure and AGAIN when
+evaluating this change.
+
+On KV260, a Sensor-RAW A/B test used 20 frames, the same exposure (`1587`),
+analogue gain (`176`), digital gain (`256`), and the same physical central
+region of the IMX219 array. The median per-pixel temporal noise fell from
+`8.03` RAW codes in the old unbinned crop to `3.08` RAW codes in this binned
+mode; median temporal coefficient of variation fell from `4.72%` to `2.26%`.
+This confirms a useful weak-light noise reduction before ISP processing.
 
 After rebuilding and reloading the sensor module, the capture node can be
 checked independently of the ISP:
@@ -336,7 +422,8 @@ output and tuning at 48-49 FPS, display at 30 FPS, and zero metadata drops.
 ### Live display and CPU load
 
 When EGL/GLES2/X11 development files are available, the default live preview is
-the custom `mali` backend at 960x540@30 FPS. The output path is genuinely
+the custom `mali` backend around 30 FPS. Wide mode uses a 960x632 initial
+window and standard mode uses 960x540. The output path is genuinely
 zero-copy: the VIP owns four MMAP buffers, exports each as a DMA-BUF, and Mali
 samples those same buffers through EGLImages. `EGL_KHR_fence_sync` prevents a
 buffer from being queued back to VIP until its GLES draw has completed.
@@ -348,12 +435,15 @@ The ARM r9p0 library cannot import `DRM_FORMAT_RGB888` or
 produces `Framebuffer not configured for fourcc 0x34325258` in `dmesg`.
 
 The working path keeps the native tightly packed BGR24 stream. Each line is
-viewed as three 960x1080 RGB565 EGLImages with offsets 0, 1920, and 3840 bytes
-and a common 5760-byte pitch. In the fragment shader, three RGB565 words are
-losslessly unpacked back into every two BGR24 pixels before scaling. Splitting
-the view three ways keeps texture indices within the Mali-400 fragment
-shader's mediump precision range; one 2880-pixel packed view causes vertical
-color stripes.
+split at two-pixel boundaries and viewed as three RGB565 EGLImages; the chunks
+may have different sizes so both output widths are supported without padding.
+For standard `1920x1080` they are three equal 960-word views with offsets 0,
+1920, and 3840 bytes and a 5760-byte pitch. For wide `1640x1080` they are
+822/819/819-word views with offsets 0, 1644, and 3282 bytes and a 4920-byte
+pitch. In the fragment shader, three RGB565 words are losslessly unpacked back
+into every two BGR24 pixels before scaling. Splitting the view three ways keeps
+texture indices within the Mali-400 fragment shader's mediump precision range;
+one large packed view causes vertical color stripes.
 
 The Mali path continuously drains the roughly 49 FPS ISP output and displays
 only the newest completed buffer at each display deadline. Older or duplicate
@@ -365,8 +455,9 @@ latest-frame mode averaged 0.8 ms with a 1.1 ms measured maximum. At the default
 30 FPS it averaged 3-8 ms with a maximum below 24 ms, while sensor/ispin
 remained 30 FPS, tuning remained 48-49 FPS, and metadata drops remained zero.
 The complete process used about 3.4% instantaneous CPU.
-A GPU readback of the final 960x540 shader output verified image orientation
-and RGB channel order. The earlier
+A GPU readback of the final shader output at the current preview size (wide
+960x632, standard 960x540) verified image orientation and RGB channel order.
+The earlier
 GStreamer/NEON backend used about 56% of one core and displayed 12-13 FPS; the
 original full-resolution OpenCV path used about 207%.
 
@@ -380,7 +471,8 @@ Display settings and the compatibility backend are selectable without a
 rebuild:
 
 ```bash
-# Default Mali zero-copy, latest-frame preview, 960x540@30.
+# Default Mali zero-copy and latest-frame preview. The initial window is
+# 960x632 for wide mode and 960x540 for standard mode, at 30 FPS.
 DISPLAY=:0 ./test/build/isp_pipeline
 
 # Reduce the preview rate if desired; low-latency mode still drops stale frames.
@@ -418,10 +510,13 @@ unchanged.
 
 ### ColorChecker CCM tuning
 
-The default CCM is a signed Q10 matrix fitted from the 24-patch Aurora chart
-under the current board test lighting. Hardware AWB remains enabled so it can
-adapt the WB stage to the illuminant; CCM is responsible for sensor color
-cross-talk and saturation:
+The test application applies an explicit BLC/CCM profile for each FOV mode.
+This matters because the V4L2 payload controls retain their last values: a
+standard-mode run after a wide-mode run must restore the standard profile.
+Environment overrides still take precedence.
+
+The standard profile keeps the established RAW10 black levels `41,41,41,41`
+and signed Q10 CCM:
 
 ```text
  2804  -1357   -424
@@ -429,22 +524,30 @@ cross-talk and saturation:
  -320  -1414   2747
 ```
 
-The matrix rows remain approximately unity-sum, which keeps neutral input
-neutral and prevents CCM from changing the AE target. The initial regularized
-fit reduced the mean luminance-matched Delta-E 76 of the 18 chromatic patches
-from 16.57 to 11.08 in its same-pose comparison. An unconstrained fit reached
-9.95 but clipped the yellow patch's blue channel to zero, so it was rejected.
+The wide `1640x1152` binned profile uses conservative per-Bayer black levels
+`72,82,82,76` in `R,Gr,Gb,B` order and this Q10 CCM:
 
-After the chart was moved and relit, a second same-pose A/B pass found excess
-green and blue in the saturated red patch. The final matrix above changes only
-the green and blue rows by opposite off-diagonal/diagonal amounts, preserving
-their row sums. The red patch changed from RGB 169/58/67 to 171/53/61 and its
-luminance-matched Delta-E 76 fell from 5.64 to 1.49. Its G/R ratio changed from
-0.343 to 0.310 (reference 0.309), while the 18-patch mean improved from 8.53 to
-8.15. The comparison used the classic ColorChecker sRGB patch values; an
-Aurora clone and non-uniform room lighting are not a spectrophotometric
-reference, so this matrix is a board-specific starting point rather than a
-universal profile.
+```text
+ 1546   -459    -64
+ -291   1899   -583
+ -146  -1449   2608
+```
+
+The wide-mode BLC was derived from ISP-input XY10 RAW frames. A more aggressive
+neutral-chart extrapolation (`89,112,112,102`) made the darkest chart patch
+neutral, but also treated reflected chart light as sensor offset, crushed
+shadow detail, and drove IMX219 analogue-gain code from about 185 to 202. It was
+therefore rejected in favor of the low-percentile RAW estimate. A covered-lens
+dark-frame sweep is still the correct way to finalize temperature-dependent
+sensor black level.
+
+With the chart held in the same pose, the selected wide profile reduced the
+mean luminance-matched Delta-E 76 of the 18 chromatic patches from 19.04 to
+10.67. The darkest neutral patch changed from RGB `90/48/67` to `57/50/62`.
+The matrix rows remain approximately unity-sum, which prevents CCM from
+changing the AE target. The comparison used classic ColorChecker sRGB values;
+an Aurora clone under mixed monitor/room lighting is not a spectrophotometric
+reference, so this is a board-specific starting point.
 
 Candidate matrices can be tested without rebuilding or reloading the driver.
 Pass all nine signed Q10 coefficients in row-major order:
@@ -452,6 +555,15 @@ Pass all nine signed Q10 coefficients in row-major order:
 ```bash
 ISP_CCM='2804,-1357,-424,-648,2163,-490,-320,-1414,2747' \
 ISP_HEADLESS=1 ISP_CAPTURE_FRAME=150 \
+ISP_CAPTURE_PREFIX=/tmp/chart ./test/build/isp_pipeline
+```
+
+Black levels can be swept without rebuilding. Values are four RAW10 integers
+in `R,Gr,Gb,B` order; the backend preserves the existing BLC linearization
+coefficients when updating them:
+
+```bash
+ISP_BLC='72,82,82,76' ISP_HEADLESS=1 ISP_CAPTURE_FRAME=300 \
 ISP_CAPTURE_PREFIX=/tmp/chart ./test/build/isp_pipeline
 ```
 
@@ -469,7 +581,8 @@ reloaded. Use flat, diffuse illumination, avoid glare, fill most of the frame,
 and let sensor AE settle before comparing CCM candidates.
 
 For headless tuning, the application can save the final frame and a lightweight
-per-output-frame CSV. The ROI coordinates use the 1920x1080 ISP output:
+per-output-frame CSV. ROI coordinates use the selected mode's output space:
+`1640x1080` for wide or `1920x1080` for standard.
 
 ```bash
 ISP_HEADLESS=1 ISP_CAPTURE_FRAME=300 \

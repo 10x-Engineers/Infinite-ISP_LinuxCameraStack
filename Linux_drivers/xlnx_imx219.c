@@ -285,6 +285,33 @@ static const struct imx219_reg mode_1640_1232_regs[] = {
 	{0x0627, 0xd0},
 };
 
+/*
+ * Full-width 2x2-binned mode for the fixed 1992x1152 ISP pipeline.
+ *
+ * The active array is cropped by 80 physical rows at the top and bottom,
+ * then binned to 1640x1152. The capture DMA places the active image at x=0
+ * in the fixed 1992x1152 ISP canvas; the VIP discards the unused right-hand
+ * canvas area and emits an exact 1640x1080 wide-FOV frame.
+ */
+static const struct imx219_reg mode_1640_1152_regs[] = {
+	{0x0164, 0x00},
+	{0x0165, 0x00},
+	{0x0166, 0x0c},
+	{0x0167, 0xcf},
+	{0x0168, 0x00},
+	{0x0169, 0x50},
+	{0x016a, 0x09},
+	{0x016b, 0x4f},
+	{0x016c, 0x06},
+	{0x016d, 0x68},
+	{0x016e, 0x04},
+	{0x016f, 0x80},
+	{0x0624, 0x06},
+	{0x0625, 0x68},
+	{0x0626, 0x04},
+	{0x0627, 0x80},
+};
+
 static const struct imx219_reg mode_640_480_regs[] = {
 	{0x0164, 0x03},
 	{0x0165, 0xe8},
@@ -451,6 +478,23 @@ static const struct imx219_mode supported_modes[] = {
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_1640_1232_regs),
 			.regs = mode_1640_1232_regs,
+		},
+		.binning = true,
+	},
+	{
+		/* Full-width 2x2-binned 30fps wide-FOV mode */
+		.width = 1640,
+		.height = 1152,
+		.crop = {
+			.left = IMX219_PIXEL_ARRAY_LEFT,
+			.top = IMX219_PIXEL_ARRAY_TOP + 80,
+			.width = 3280,
+			.height = 2304
+		},
+		.vts_def = IMX219_VTS_30FPS_BINNED,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mode_1640_1152_regs),
+			.regs = mode_1640_1152_regs,
 		},
 		.binning = true,
 	},

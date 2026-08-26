@@ -70,6 +70,94 @@ struct vip_state {
 	u32 frame_sequence;
 };
 
+static void isp_vip_init(struct REG_Infinite_ISP_VIP *infinite_isp_vip);
+
+#define VIP_ISP_INPUT_WIDTH	1992
+#define VIP_ISP_INPUT_HEIGHT	1152
+#define VIP_STANDARD_WIDTH	1920
+#define VIP_WIDE_WIDTH		1640
+#define VIP_OUTPUT_HEIGHT	1080
+
+static const char *vip_program_stream_format(
+	struct vip_state *vip, struct REG_Infinite_ISP_VIP *config)
+{
+	u32 in_width = vip->pad_format[VIP_PAD_SINK].width;
+	u32 in_height = vip->pad_format[VIP_PAD_SINK].height;
+	u32 out_width = vip->pad_format[VIP_PAD_SOURCE].width;
+	u32 out_height = vip->pad_format[VIP_PAD_SOURCE].height;
+	const char *mode = "default";
+
+	isp_vip_init(config);
+
+	if (in_width == VIP_ISP_INPUT_WIDTH &&
+	    in_height == VIP_ISP_INPUT_HEIGHT &&
+	    out_width == VIP_STANDARD_WIDTH &&
+	    out_height == VIP_OUTPUT_HEIGHT) {
+		/* Original cropped Sensor mode: center 1920x1080 in 1992x1152. */
+		config->vip_config.VIP_TOP_EN.VIP_TOP_EN_IRC_EN = 1;
+		config->vip_config.VIP_TOP_EN.VIP_TOP_EN_SCALE_EN = 0;
+		config->irc.CROP_X = 36;
+		config->irc.CROP_Y = 36;
+		config->irc.IRC_OUTPUT = 1;
+		mode = "standard";
+	} else if (in_width == VIP_ISP_INPUT_WIDTH &&
+		   in_height == VIP_ISP_INPUT_HEIGHT &&
+		   out_width == VIP_WIDE_WIDTH &&
+		   out_height == VIP_OUTPUT_HEIGHT) {
+		/*
+		 * Wide mode contains 1640 active pixels at x=0 in the fixed
+		 * 1992-pixel ISP canvas.  IRC has a fixed 1920-pixel output, so
+		 * use the existing scale/crop stage as a 1:1 left crop and center
+		 * the 1152 input lines vertically to 1080.
+		 */
+		config->vip_config.VIP_TOP_EN.VIP_TOP_EN_IRC_EN = 0;
+		config->vip_config.VIP_TOP_EN.VIP_TOP_EN_SCALE_EN = 1;
+		config->scale.s_in_crop_w = VIP_WIDE_WIDTH;
+		config->scale.s_in_crop_h = VIP_ISP_INPUT_HEIGHT;
+		config->scale.s_out_crop_w = VIP_WIDE_WIDTH;
+		config->scale.s_out_crop_h = VIP_OUTPUT_HEIGHT;
+		config->scale.dscale_w = 1;
+		config->scale.dscale_h = 1;
+		mode = "wide";
+	}
+
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 1);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_BITS, 8);
+	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_TOP_EN,
+		config->vip_config.VIP_TOP_EN.VIP_TOP_EN_val);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, rgbc, &config->rgbc);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, irc, &config->irc);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, scale, &config->scale);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, yuvconvformat,
+		&config->yuvconvformat);
+	INFINITE_ISP_WRITE_VIP_REGs(vip->iomem, osd, &config->osd);
+
+	return mode;
+}
+
+static int vip_apply_stream_format(struct vip_state *vip, bool release_reset)
+{
+	struct REG_Infinite_ISP_VIP *config;
+	const char *mode;
+
+	config = kzalloc(sizeof(*config), GFP_KERNEL);
+	if (!config)
+		return -ENOMEM;
+
+	mode = vip_program_stream_format(vip, config);
+	if (release_reset)
+		INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 0);
+
+	dev_info(vip->dev, "VIP format applied: mode=%s %ux%u -> %ux%u",
+		 mode, vip->pad_format[VIP_PAD_SINK].width,
+		 vip->pad_format[VIP_PAD_SINK].height,
+		 vip->pad_format[VIP_PAD_SOURCE].width,
+		 vip->pad_format[VIP_PAD_SOURCE].height);
+	kfree(config);
+
+	return 0;
+}
+
 static inline struct vip_state *
 to_vipstate(struct v4l2_subdev *subdev)
 {
@@ -123,58 +211,21 @@ static int vip_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 
 static int vip_start_stream(struct vip_state *vip)
 {
-	struct REG_Infinite_ISP_VIP *infinite_isp_vip;
 	u32 in_width = vip->pad_format[VIP_PAD_SINK].width;
 	u32 in_height = vip->pad_format[VIP_PAD_SINK].height;
 	u32 out_width = vip->pad_format[VIP_PAD_SOURCE].width;
 	u32 out_height = vip->pad_format[VIP_PAD_SOURCE].height;
-	u32 out_code = vip->pad_format[VIP_PAD_SOURCE].code;
-	u32 scale_h = in_width / out_width;
-	u32 scale_v = in_height / out_height;
-	u32 top_en = 0;
 	int ret;
 
-	infinite_isp_vip = kzalloc(sizeof(*infinite_isp_vip), GFP_KERNEL);
-	if (!infinite_isp_vip) {
-		dev_err(vip->dev, "Failed to allocate infinite_isp_vip");
-		return -ENOMEM;
-	}
-	if (out_code == MEDIA_BUS_FMT_UYVY8_1X16) {
-		infinite_isp_vip->yuvconvformat.YUV444TO422 = 1;
-	} else if (out_code == MEDIA_BUS_FMT_VYYUYY8_1X24) {
-		infinite_isp_vip->yuvconvformat.YUV444TO422 = 0;
-	} else {
-		pr_err("Unsupported output format %08X", out_code);
-	}
-	// if (in_width != out_width || in_height != out_height) {
-	// 	top_en |= VIP_REG_TOP_EN_BIT_CROP_EN;
-	// }
-	// if (scale_h > 1 && scale_v > 1) {
-	// 	top_en |= VIP_REG_TOP_EN_BIT_DSCALE_EN;
-	// }
-	// vip_write(vip, VIP_REG_TOP_EN, top_en);
-
-	// if (top_en & VIP_REG_TOP_EN_BIT_DSCALE_EN) {
-	// 	u32 scale_val = scale_h < scale_v ? scale_h : scale_v;
-	// 	vip_write(vip, VIP_REG_CROP_X, (in_width-out_width*scale_val)/2);
-	// 	vip_write(vip, VIP_REG_CROP_Y, (in_height-out_height*scale_val)/2);
-	// 	vip_write(vip, VIP_REG_CROP_W, out_width*scale_val);
-	// 	vip_write(vip, VIP_REG_CROP_H, out_height*scale_val);
-	// 	vip_write(vip, VIP_REG_DSCALE_H, scale_val-1);
-	// 	vip_write(vip, VIP_REG_DSCALE_V, scale_val-1);
-	// } else {
-	// 	vip_write(vip, VIP_REG_CROP_X, (in_width-out_width)/2);
-	// 	vip_write(vip, VIP_REG_CROP_Y, (in_height-out_height)/2);
-	// 	vip_write(vip, VIP_REG_CROP_W, out_width);
-	// 	vip_write(vip, VIP_REG_CROP_H, out_height);
-	// }
-
 	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_MASK, ~0U);
+	ret = vip_apply_stream_format(vip, false);
+	if (ret)
+		return ret;
 	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 0);
 	INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_INT_STATUS, 0);
 	ret = xil_isp_irq_enable(vip->irq_source);
 	if (ret) {
-		kfree(infinite_isp_vip);
+		INFINITE_ISP_VIP_WRITE_REG(vip->iomem, vip_config, VIP_RESET, 1);
 		return ret;
 	}
 	vip->irq_source_enabled = true;
@@ -184,7 +235,8 @@ static int vip_start_stream(struct vip_state *vip)
 		  VIP_REG_INT_MASK_BIT_FRAME_DONE));
 
 	vip->streaming = true;
-	kfree(infinite_isp_vip);
+	dev_info(vip->dev, "VIP stream started %ux%u -> %ux%u",
+		 in_width, in_height, out_width, out_height);
 
 	return 0;
 }
@@ -473,6 +525,17 @@ static int vip_set_format(struct v4l2_subdev *sd,
 	__format->width  = fmt->format.width;
 	__format->height = fmt->format.height;
 	fmt->format = *__format;
+	/*
+	 * The current composite video path does not propagate s_stream to this
+	 * subdevice. Program ACTIVE source-format changes here while the DMA
+	 * pipeline is stopped, so standard/wide modes can switch without a KO
+	 * reload. TRY formats must never touch the hardware.
+	 */
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE && !vip->streaming) {
+		ret = vip_apply_stream_format(vip, true);
+		if (ret)
+			goto unlock_set_format;
+	}
 
 	dev_info(vip->dev, "Set format for pad %d: code=%08X, width=%u, height=%u",
 		fmt->pad, fmt->format.code, fmt->format.width, fmt->format.height);

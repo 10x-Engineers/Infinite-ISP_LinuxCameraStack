@@ -68,6 +68,8 @@ int main()
     color_config.hardware_awb = false;
     color_config.manual_wb_r_gain = 403;
     color_config.manual_wb_b_gain = 370;
+    color_config.black_levels =
+        std::array<std::uint32_t, 4>{80, 96, 96, 88};
     color_config.color_correction_matrix =
         std::array<std::int32_t, 9>{2804, -1357, -424,
                                     -584, 2099, -490,
@@ -77,6 +79,7 @@ int main()
     assert(color_controls.auto_white_balance == false);
     assert(color_controls.red_balance == 403);
     assert(color_controls.blue_balance == 370);
+    assert(color_controls.black_levels == color_config.black_levels);
     assert(color_controls.color_correction_matrix ==
            color_config.color_correction_matrix);
 

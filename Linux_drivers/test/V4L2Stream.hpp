@@ -84,7 +84,8 @@ public:
         fd = -1;
     }
 
-    bool setFormat(uint32_t w, uint32_t h, uint32_t pixfmt) {
+    bool setFormat(uint32_t w, uint32_t h, uint32_t pixfmt,
+                   uint32_t requestedBytesPerLine = 0) {
         struct v4l2_format fmt{};
         fmt.type = isOutput ?
             V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE :
@@ -93,6 +94,12 @@ public:
         fmt.fmt.pix_mp.height = h;
         fmt.fmt.pix_mp.pixelformat = pixfmt;
         fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
+        if (requestedBytesPerLine) {
+            fmt.fmt.pix_mp.num_planes = 1;
+            fmt.fmt.pix_mp.plane_fmt[0].bytesperline = requestedBytesPerLine;
+            fmt.fmt.pix_mp.plane_fmt[0].sizeimage =
+                requestedBytesPerLine * h;
+        }
 
         if (xioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
             perror_ln(("VIDIOC_S_FMT " + devpath).c_str());
@@ -108,6 +115,41 @@ public:
                 (pixelFormat == V4L2_PIX_FMT_RGB24 ||
                  pixelFormat == V4L2_PIX_FMT_BGR24) ? 3 : 2;
             bytesPerLine = width * bytesPerPixel;
+        }
+        if (requestedBytesPerLine && bytesPerLine != requestedBytesPerLine) {
+            std::cerr << "Driver returned stride " << bytesPerLine
+                      << " for " << devpath << ", requested "
+                      << requestedBytesPerLine << "\n";
+            return false;
+        }
+        return true;
+    }
+
+    bool setCompose(uint32_t left, uint32_t top,
+                    uint32_t composeWidth, uint32_t composeHeight) {
+        struct v4l2_selection selection{};
+        selection.type = isOutput ?
+            V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE :
+            V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        selection.target = V4L2_SEL_TGT_COMPOSE;
+        selection.r.left = left;
+        selection.r.top = top;
+        selection.r.width = composeWidth;
+        selection.r.height = composeHeight;
+
+        if (xioctl(fd, VIDIOC_S_SELECTION, &selection) < 0) {
+            perror_ln(("VIDIOC_S_SELECTION compose " + devpath).c_str());
+            return false;
+        }
+        if (selection.r.left != static_cast<int32_t>(left) ||
+            selection.r.top != static_cast<int32_t>(top) ||
+            selection.r.width != composeWidth ||
+            selection.r.height != composeHeight) {
+            std::cerr << "Driver adjusted compose rectangle on " << devpath
+                      << " to " << selection.r.left << ',' << selection.r.top
+                      << ' ' << selection.r.width << 'x' << selection.r.height
+                      << "\n";
+            return false;
         }
         return true;
     }
@@ -161,6 +203,13 @@ public:
             }
         }
         return true;
+    }
+
+    void clearMappedBuffers(uint8_t value = 0) {
+        for (auto &buffer : buffers) {
+            if (buffer.start && buffer.start != MAP_FAILED)
+                std::memset(buffer.start, value, buffer.length);
+        }
     }
 
     bool queueAllCapture() {

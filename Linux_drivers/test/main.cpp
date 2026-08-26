@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <deque>
 #include <limits>
 #include <sstream>
@@ -43,6 +44,35 @@ static std::atomic<uint32_t> g_latest_ae_skewness{0};
 static std::atomic<uint32_t> g_latest_dgain_index{0};
 static std::atomic<uint32_t> g_latest_sensor_again{0};
 static void sigint_handler(int){ g_running = false; }
+
+struct PipelineGeometry {
+    const char *name;
+    std::uint32_t sensorWidth;
+    std::uint32_t sensorHeight;
+    std::uint32_t ispInputWidth;
+    std::uint32_t ispInputHeight;
+    std::uint32_t ispOutputWidth;
+    std::uint32_t ispOutputHeight;
+    std::uint32_t rawStrideBytes;
+};
+
+static bool pipelineGeometryFromEnvironment(PipelineGeometry &geometry) {
+    const std::string mode = std::getenv("ISP_FOV_MODE")
+        ? std::getenv("ISP_FOV_MODE") : "wide";
+
+    if (mode == "wide") {
+        geometry = {"wide", 1640, 1152, 1992, 1152, 1640, 1080, 3840};
+        return true;
+    }
+    if (mode == "standard" || mode == "crop" || mode == "legacy") {
+        geometry = {"standard", 1992, 1152, 1992, 1152, 1920, 1080, 3840};
+        return true;
+    }
+
+    std::cerr << "Unknown ISP_FOV_MODE='" << mode
+              << "'; expected wide or standard" << std::endl;
+    return false;
+}
 
 static void recordDisplayAge(const DequeueInfo &info) {
     if (info.timestamp.tv_sec == 0)
@@ -137,8 +167,14 @@ static std::string findVideoNodeByName(const std::string &expectedName) {
     return {};
 }
 
-int setSubDevFmt() {
+int setSubDevFmt(const PipelineGeometry &geometry) {
     std::cout << "=== V4L2 Subdev Format Setter ===" << std::endl;
+    std::cout << "[Pipeline] FOV mode=" << geometry.name
+              << ", Sensor=" << geometry.sensorWidth << 'x'
+              << geometry.sensorHeight << ", ISP input="
+              << geometry.ispInputWidth << 'x' << geometry.ispInputHeight
+              << ", output=" << geometry.ispOutputWidth << 'x'
+              << geometry.ispOutputHeight << std::endl;
 
     // -------------------------
     // 1. Sensor (imx219)
@@ -148,12 +184,12 @@ int setSubDevFmt() {
 
     std::cout << "Sensor name: " << sensor.getName() << std::endl;
 
-    sensor.setFormat(
+    if (!sensor.setFormat(
         0,                              // pad
         MEDIA_BUS_FMT_SRGGB10_1X10,     // raw Bayer 10bit
-        1992, 1152,                     // resolution
+        geometry.sensorWidth, geometry.sensorHeight,
         V4L2_FIELD_NONE
-    );
+    )) return -1;
     std::cout << "Sensor format set OK." << std::endl;
 
     // -------------------------
@@ -164,10 +200,23 @@ int setSubDevFmt() {
 
     std::cout << "MIPI name: " << mipi.getName() << std::endl;
 
-    // pad0 (sink)
-    mipi.setFormat(0, MEDIA_BUS_FMT_SRGGB10_1X10, 1992, 1152);
-    // pad1 (source)
-    mipi.setFormat(1, MEDIA_BUS_FMT_SRGGB10_1X10, 1992, 1152);
+    // Configure both MIPI pads, matching the media-ctl setup sequence.
+    if (!mipi.setFormat(0, MEDIA_BUS_FMT_SRGGB10_1X10,
+                        geometry.sensorWidth, geometry.sensorHeight) ||
+        !mipi.setFormat(1, MEDIA_BUS_FMT_SRGGB10_1X10,
+                        geometry.sensorWidth, geometry.sensorHeight))
+        return -1;
+    v4l2_mbus_framefmt mipiSource {};
+    if (!mipi.getFormat(1, mipiSource) ||
+        mipiSource.width != geometry.sensorWidth ||
+        mipiSource.height != geometry.sensorHeight) {
+        std::cerr << "Unexpected MIPI source format "
+                  << mipiSource.width << 'x' << mipiSource.height
+                  << ", expected " << geometry.sensorWidth << 'x'
+                  << geometry.sensorHeight
+                  << std::endl;
+        return -1;
+    }
     std::cout << "MIPI formats set OK." << std::endl;
 
     // -------------------------
@@ -179,9 +228,13 @@ int setSubDevFmt() {
     std::cout << "SubsetConv name: " << conv.getName() << std::endl;
 
     // pad0: input RAW
-    conv.setFormat(0, MEDIA_BUS_FMT_SRGGB10_1X10, 1992, 1152);
+    if (!conv.setFormat(0, MEDIA_BUS_FMT_SRGGB10_1X10,
+                        geometry.sensorWidth, geometry.sensorHeight))
+        return -1;
     // pad1: output Y10
-    conv.setFormat(1, MEDIA_BUS_FMT_Y10_1X10,     1992, 1152);
+    if (!conv.setFormat(1, MEDIA_BUS_FMT_Y10_1X10,
+                        geometry.sensorWidth, geometry.sensorHeight))
+        return -1;
     std::cout << "SubsetConv formats set OK." << std::endl;
 
     V4L2Subdev infiniteISP(findVideoNodeByName("a0060000.infinite_isp"));
@@ -194,8 +247,13 @@ int setSubDevFmt() {
     printf("VIP 4000 name     : %s\n", vip4000.getName().c_str());
     printf("VIP 6000 name     : %s\n", vip6000.getName().c_str());
 
-    infiniteISP.setFormat(0, MEDIA_BUS_FMT_Y10_1X10, 1992, 1152);
-    vip4000.setFormat(1, MEDIA_BUS_FMT_RBG888_1X24, 1920, 1080);
+    if (!infiniteISP.setFormat(0, MEDIA_BUS_FMT_Y10_1X10,
+                               geometry.ispInputWidth,
+                               geometry.ispInputHeight) ||
+        !vip4000.setFormat(1, MEDIA_BUS_FMT_RBG888_1X24,
+                           geometry.ispOutputWidth,
+                           geometry.ispOutputHeight))
+        return -1;
 
     // -------------------------
     // Read back formats
@@ -209,8 +267,13 @@ int setSubDevFmt() {
                   << " code=0x" << std::hex << fmt.code << std::dec << std::endl;
     }
 
+    if (mipi.getFormat(0, fmt)) {
+        std::cout << "MIPI pad0: " << fmt.width << "x" << fmt.height
+                  << " code=0x" << std::hex << fmt.code << std::dec << std::endl;
+    }
+
     if (mipi.getFormat(1, fmt)) {
-        std::cout << "MIPI pad1: " << fmt.width << "x" << fmt.height
+        std::cout << "MIPI pad1 (source): " << fmt.width << "x" << fmt.height
                   << " code=0x" << std::hex << fmt.code << std::dec << std::endl;
     }
 
@@ -235,6 +298,24 @@ int setSubDevFmt() {
 
 static infinite_isp::TuningConfig tuningConfigFromEnvironment(bool &enabled) {
     infinite_isp::TuningConfig config;
+    const std::string fovMode = std::getenv("ISP_FOV_MODE")
+        ? std::getenv("ISP_FOV_MODE") : "wide";
+    if (fovMode == "wide") {
+        config.black_levels =
+            std::array<std::uint32_t, 4>{72, 82, 82, 76};
+        config.color_correction_matrix =
+            std::array<std::int32_t, 9>{1546, -459, -64,
+                                        -291, 1899, -583,
+                                        -146, -1449, 2608};
+    } else {
+        /* Explicitly restore the legacy profile after a wide-mode run. */
+        config.black_levels =
+            std::array<std::uint32_t, 4>{41, 41, 41, 41};
+        config.color_correction_matrix =
+            std::array<std::int32_t, 9>{2804, -1357, -424,
+                                        -648, 2163, -490,
+                                        -320, -1414, 2747};
+    }
     const std::string mode = std::getenv("ISP_TUNING_MODE")
         ? std::getenv("ISP_TUNING_MODE") : "sensor-ae";
 
@@ -272,6 +353,37 @@ static infinite_isp::TuningConfig tuningConfigFromEnvironment(bool &enabled) {
                 config.manual_wb_r_gain = static_cast<std::uint32_t>(r);
                 config.manual_wb_b_gain = static_cast<std::uint32_t>(b);
             }
+        }
+    }
+
+    if (const char *value = std::getenv("ISP_BLC")) {
+        std::array<std::uint32_t, 4> levels{};
+        std::stringstream stream(value);
+        bool valid = true;
+        for (std::size_t i = 0; i < levels.size(); ++i) {
+            unsigned long level = 0;
+            if (!(stream >> level) || level > 1023) {
+                valid = false;
+                break;
+            }
+            levels[i] = static_cast<std::uint32_t>(level);
+            if (i + 1 < levels.size()) {
+                char separator = 0;
+                if (!(stream >> separator) || separator != ',') {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        stream >> std::ws;
+        if (!stream.eof())
+            valid = false;
+        if (valid) {
+            config.black_levels = levels;
+        } else {
+            std::cerr << "[Tuning] Invalid ISP_BLC; expected four comma-"
+                         "separated RAW10 values (R,Gr,Gb,B)"
+                      << std::endl;
         }
     }
 
@@ -334,8 +446,10 @@ static void tuningThread(infinite_isp::V4L2Backend *backend,
     else if (tuner->config().ae_mode == infinite_isp::AeMode::Sensor)
         mode = "sensor AGAIN AE";
     mode += tuner->config().hardware_awb ? " + hardware AWB" : " + manual WB";
+    if (tuner->config().black_levels)
+        mode += " + BLC profile";
     if (tuner->config().color_correction_matrix)
-        mode += " + CCM override";
+        mode += " + CCM profile";
     std::cout << "[Tuning] Metadata-driven thread started (" << mode << ")"
               << std::endl;
 
@@ -395,9 +509,7 @@ static void tuningThread(infinite_isp::V4L2Backend *backend,
     std::cout << "[Tuning] Thread stopped" << std::endl;
 }
 
-int ispPipelineRun() {
-    constexpr int kIspOutputWidth = 1920;
-    constexpr int kIspOutputHeight = 1080;
+int ispPipelineRun(const PipelineGeometry &geometry) {
     constexpr int kPipelineBufferCount = 4;
     const std::string sensorCapture =
         findVideoNodeByName("vcap_mipi_csi2_rx_rpi output 0");
@@ -454,9 +566,10 @@ int ispPipelineRun() {
     int displayWidth = 960;
     if (const char *value = std::getenv("ISP_DISPLAY_WIDTH"))
         displayWidth = std::max(160, std::atoi(value));
-    displayWidth = std::min(displayWidth, kIspOutputWidth);
-    const int displayHeight = kIspOutputHeight * displayWidth /
-                              kIspOutputWidth;
+    displayWidth = std::min(displayWidth,
+                            static_cast<int>(geometry.ispOutputWidth));
+    const int displayHeight = geometry.ispOutputHeight * displayWidth /
+                              geometry.ispOutputWidth;
     int displayFps = maliDisplay ? 30 : 15;
     if (const char *value = std::getenv("ISP_DISPLAY_FPS"))
         displayFps = std::clamp(std::atoi(value), 1, 60);
@@ -488,16 +601,31 @@ int ispPipelineRun() {
     if (!cap0.openDevice() || !out3.openDevice() || !cap2.openDevice())
         return -1;
 
-    if (!cap0.setFormat(1992,1152,v4l2_fourcc('X','Y','1','0')) ||
-        !out3.setFormat(1992,1152,v4l2_fourcc('X','Y','1','0')))
+    if (!cap0.setFormat(geometry.ispInputWidth, geometry.ispInputHeight,
+                        v4l2_fourcc('X','Y','1','0'),
+                        geometry.rawStrideBytes) ||
+        !cap0.setCompose(0, 0, geometry.sensorWidth,
+                        geometry.sensorHeight) ||
+        !out3.setFormat(geometry.ispInputWidth, geometry.ispInputHeight,
+                        v4l2_fourcc('X','Y','1','0'),
+                        geometry.rawStrideBytes))
         return -1;
     /* Match Vitis: RGB video bus written to memory in BGR24 order. */
-    if (!cap2.setFormat(kIspOutputWidth, kIspOutputHeight,
-                        V4L2_PIX_FMT_BGR24))
+    if (!cap2.setFormat(geometry.ispOutputWidth, geometry.ispOutputHeight,
+                        V4L2_PIX_FMT_BGR24) ||
+        !cap2.setCompose(0, 0, geometry.ispOutputWidth,
+                         geometry.ispOutputHeight))
         return -1;
 
     if (!cap0.initMMap())
         return -1;
+    // Wide mode writes a smaller compose rectangle into the fixed ISP canvas.
+    cap0.clearMappedBuffers();
+    std::cout << "[Pipeline] DMA canvas=" << geometry.ispInputWidth << 'x'
+              << geometry.ispInputHeight << ", active="
+              << geometry.sensorWidth << 'x' << geometry.sensorHeight
+              << " at x=0, stride="
+              << cap0.frameStride() << " bytes" << std::endl;
 
 #ifdef ISP_HAVE_MALI_EGL
     std::unique_ptr<MaliEglDmaBufViewer> maliViewer;
@@ -505,7 +633,8 @@ int ispPipelineRun() {
         if (!cap2.initMMap() || !cap2.exportAllDMABuf())
             return -1;
         maliViewer = std::make_unique<MaliEglDmaBufViewer>(
-            kIspOutputWidth, kIspOutputHeight, displayWidth, displayHeight);
+            geometry.ispOutputWidth, geometry.ispOutputHeight,
+            displayWidth, displayHeight);
         std::vector<int> displayFds;
         displayFds.reserve(cap2.buffers.size());
         for (const auto &buffer : cap2.buffers)
@@ -673,10 +802,16 @@ int ispPipelineRun() {
     int saveAfterFrames = 30;
     if (const char *value = std::getenv("ISP_CAPTURE_FRAME"))
         saveAfterFrames = std::max(1, std::atoi(value));
+    int captureSeries = 1;
+    if (const char *value = std::getenv("ISP_CAPTURE_SERIES"))
+        captureSeries = std::clamp(std::atoi(value), 1, 100);
     const std::string capturePrefix = std::getenv("ISP_CAPTURE_PREFIX") ?
         std::getenv("ISP_CAPTURE_PREFIX") : "isp_capture";
+    std::vector<cv::Mat> capturedFrames;
+    if (headless)
+        capturedFrames.reserve(captureSeries);
     const cv::Rect measureRoi = measurementRoiFromEnvironment(
-        kIspOutputWidth, kIspOutputHeight);
+        geometry.ispOutputWidth, geometry.ispOutputHeight);
     std::ofstream measureCsv;
     if (const char *value = std::getenv("ISP_MEASURE_CSV")) {
         if (maliDisplay) {
@@ -707,7 +842,8 @@ int ispPipelineRun() {
     std::unique_ptr<GstViewer> gstViewer;
     if (gstreamerDisplay) {
         gstViewer = std::make_unique<GstViewer>(
-            kIspOutputWidth, kIspOutputHeight, displayWidth, displayHeight,
+            geometry.ispOutputWidth, geometry.ispOutputHeight,
+            displayWidth, displayHeight,
             displayFps, g_running);
         if (!gstViewer->start()) {
             std::cerr << "[Display] GStreamer start failed: "
@@ -839,24 +975,10 @@ int ispPipelineRun() {
                 }
 
                 if (headless && frameNumber >= saveAfterFrames) {
-                    cv::Mat swapped;
-                    cv::cvtColor(bgr, swapped, cv::COLOR_RGB2BGR);
-                    cv::imwrite(capturePrefix + "_bgr.png", bgr);
-                    cv::imwrite(capturePrefix + "_rgb.png", swapped);
-
-                    const size_t rawBytes = std::min(
-                        cap2.bufferLen(idx),
-                        static_cast<size_t>(cap2.frameStride()) * cap2.frameHeight());
-                    std::ofstream raw(capturePrefix + ".raw", std::ios::binary);
-                    raw.write(static_cast<const char *>(cap2.bufferPtr(idx)), rawBytes);
-
-                    const cv::Scalar meanBgr = cv::mean(bgr);
-                    const cv::Scalar meanRgb = cv::mean(swapped);
-                    std::cout << "Saved " << capturePrefix
-                              << "_{bgr,rgb}.png and .raw\n"
-                              << "Mean BGR as BGR24: " << meanBgr << '\n'
-                              << "Mean BGR if swapped: " << meanRgb << std::endl;
-                    g_running = false;
+                    capturedFrames.emplace_back(bgr.clone());
+                    if (capturedFrames.size() >=
+                        static_cast<std::size_t>(captureSeries))
+                        g_running = false;
                 } else if (!headless) {
                     const auto now = std::chrono::steady_clock::now();
                     if (now >= nextDisplay) {
@@ -966,6 +1088,35 @@ int ispPipelineRun() {
         tuningBackend->stop();
     }
     monitor.join();
+
+    if (!capturedFrames.empty()) {
+        if (capturedFrames.size() == 1) {
+            const cv::Mat &bgr = capturedFrames.front();
+            cv::Mat swapped;
+            cv::cvtColor(bgr, swapped, cv::COLOR_RGB2BGR);
+            cv::imwrite(capturePrefix + "_bgr.png", bgr);
+            cv::imwrite(capturePrefix + "_rgb.png", swapped);
+            std::ofstream raw(capturePrefix + ".raw", std::ios::binary);
+            raw.write(reinterpret_cast<const char *>(bgr.data),
+                      static_cast<std::streamsize>(bgr.total() *
+                                                   bgr.elemSize()));
+            std::cout << "Saved " << capturePrefix
+                      << "_{bgr,rgb}.png and .raw\n"
+                      << "Mean BGR as BGR24: " << cv::mean(bgr) << '\n'
+                      << "Mean BGR if swapped: " << cv::mean(swapped)
+                      << std::endl;
+        } else {
+            for (std::size_t i = 0; i < capturedFrames.size(); ++i) {
+                std::ostringstream path;
+                path << capturePrefix << '_' << std::setfill('0')
+                     << std::setw(3) << i << "_bgr.png";
+                cv::imwrite(path.str(), capturedFrames[i]);
+            }
+            std::cout << "Saved " << capturedFrames.size()
+                      << " BGR frames as " << capturePrefix
+                      << "_NNN_bgr.png" << std::endl;
+        }
+    }
     // viewer.stop();
     return 0;
 }
@@ -973,9 +1124,13 @@ int ispPipelineRun() {
 int main(){
     signal(SIGINT, sigint_handler);
 
-    if (setSubDevFmt() < 0)
+    PipelineGeometry geometry{};
+    if (!pipelineGeometryFromEnvironment(geometry))
         return 1;
-    if (ispPipelineRun() < 0)
+
+    if (setSubDevFmt(geometry) < 0)
+        return 1;
+    if (ispPipelineRun(geometry) < 0)
         return 1;
 
     std::cout << "Exited\n";

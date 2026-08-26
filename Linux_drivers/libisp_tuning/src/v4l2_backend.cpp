@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "infinite_isp/v4l2_backend.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -77,6 +78,32 @@ struct V4L2Backend::Impl {
         controls.controls = &control;
         if (retryIoctl(fd, VIDIOC_S_EXT_CTRLS, &controls) < 0) {
             setErrno("VIDIOC_S_EXT_CTRLS(CCM)");
+            return false;
+        }
+        return true;
+    }
+
+    bool setBlackLevels(const std::array<std::uint32_t, 4> &levels)
+    {
+        /* Preserve the four linearization coefficients in REG_BLC. */
+        std::array<std::uint32_t, 128> payload{};
+        v4l2_ext_control control{};
+        control.id = V4L2_CID_USER_XIL_ISP_LITE_BLC;
+        control.size = sizeof(payload);
+        control.ptr = payload.data();
+
+        v4l2_ext_controls controls{};
+        controls.which = V4L2_CTRL_WHICH_CUR_VAL;
+        controls.count = 1;
+        controls.controls = &control;
+        if (retryIoctl(fd, VIDIOC_G_EXT_CTRLS, &controls) < 0) {
+            setErrno("VIDIOC_G_EXT_CTRLS(BLC)");
+            return false;
+        }
+
+        std::copy(levels.begin(), levels.end(), payload.begin());
+        if (retryIoctl(fd, VIDIOC_S_EXT_CTRLS, &controls) < 0) {
+            setErrno("VIDIOC_S_EXT_CTRLS(BLC)");
             return false;
         }
         return true;
@@ -289,6 +316,9 @@ bool V4L2Backend::apply(const ControlUpdate &controls)
         return false;
     if (controls.digital_gain &&
         !impl_->setControl(V4L2_CID_DIGITAL_GAIN, *controls.digital_gain))
+        return false;
+    if (controls.black_levels &&
+        !impl_->setBlackLevels(*controls.black_levels))
         return false;
     if (controls.color_correction_matrix &&
         !impl_->setColorCorrectionMatrix(*controls.color_correction_matrix))
